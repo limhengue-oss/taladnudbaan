@@ -9,16 +9,17 @@
 #   changelog_YYYYMMDD.csv   สรุปการเปลี่ยนแปลง
 #   detail_update_YYYYMMDD.csv  detail ของ new + updated
 # =============================================================================
+rm(list=ls())
 
 # ---- CONFIG -----------------------------------------------------------------
 CONFIG <- list(
-  work_dir  = "C:/Users/wasinr/OneDrive - Bank of Thailand/My Github/taladnudbaan",
+  work_dir  = "C:/Users/wasinr/OneDrive - Bank of Thailand/My Github/Repository/taladnudbaan",
   
   base_url  = "https://www.taladnudbaan.com/properties?sellers_only_out=on&order=price%20desc&view=list&page_length=60&",
-  sleep_sec   = 0.2,
+  sleep_sec   = 0.0,
   max_retries = 4L,
   backoff_sec = 20,
-  max_pages   = 9000L,
+  max_pages   = 3L,
   
   # input files (จาก scrape ครั้งแรก)
   baseline_list_rdata = "taladnudbaan_urls.RData",     # url_df (page, url, updated_date)
@@ -39,11 +40,8 @@ CONFIG <- list(
 )
 
 # ---- SETUP ------------------------------------------------------------------
-# บนเครื่องตัวเอง: setwd ไป work_dir | บน GitHub Actions: ใช้ working dir จาก actions/checkout แทน
-if (Sys.getenv("GITHUB_ACTIONS") != "true") {
-  if (!dir.exists(CONFIG$work_dir)) stop("ไม่พบ work_dir: ", CONFIG$work_dir)
-  setwd(CONFIG$work_dir)
-}
+if (!dir.exists(CONFIG$work_dir)) stop("ไม่พบ work_dir: ", CONFIG$work_dir)
+setwd(CONFIG$work_dir)
 
 pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite")
 missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
