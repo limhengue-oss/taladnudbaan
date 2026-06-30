@@ -12,7 +12,7 @@ concurrency:
 jobs:
   weekly:
     runs-on: ubuntu-latest
-    timeout-minutes: 120     # list ~20 นาที + detail หลักร้อย = ปลอดภัยใน 2 ชั่วโมง
+    timeout-minutes: 300     # list ~2,773 หน้า x ~3.5s ≈ 2.7 ชม. + detail + buffer (GitHub cap = 360 นาที)
 
     steps:
       - name: Checkout repo
