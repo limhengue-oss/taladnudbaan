@@ -94,6 +94,8 @@ build_list_url <- function(page) paste0(CONFIG$base_url, "page=", page)
 
 parse_list_page <- function(list_page) {
   anchors <- list_page |> html_elements(xpath = "//a[contains(@href, '/property/')]")
+  n_anchors <- length(anchors)
+
   rows <- map(anchors, function(a) {
     href <- html_attr(a, "href")
     if (is.na(href) || !str_detect(href, "/property/[^/]+/[^/]+/[^/]+")) return(NULL)
@@ -107,6 +109,20 @@ parse_list_page <- function(list_page) {
       updated_date = str_match(txt, "ปรับปรุงล่าสุด\\s*([0-9]{1,2} [^ ]+ [0-9]{4})")[, 2]
     )
   })
+
+  empty_schema <- tibble(url = character(0), updated_date = character(0))
+  n_matched <- sum(!map_lgl(rows, is.null))
+
+  if (n_anchors == 0) {
+    message("    [info] หน้านี้ไม่มี anchor /property/ เลย -> ถือว่าจบข้อมูลจริง")
+    return(empty_schema)
+  }
+  if (n_matched == 0) {
+    # ผิดปกติ: มี anchor แต่ regex ไม่ผ่านสักตัว -> อาจไม่ใช่หน้าสุดท้ายจริง
+    message("    [WARN] พบ ", n_anchors, " anchor แต่ regex ไม่ผ่านเลยสักตัว -> ตรวจ pattern href")
+    return(empty_schema)
+  }
+
   bind_rows(rows) |> distinct(url, .keep_all = TRUE)
 }
 
