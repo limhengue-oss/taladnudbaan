@@ -46,7 +46,7 @@ if (Sys.getenv("GITHUB_ACTIONS") != "true") {
   setwd(CONFIG$work_dir)
 }
 
-pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite")
+pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite","base64enc")
 missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing) > 0) stop("ติดตั้ง packages ก่อน: install.packages(c(",
                               paste(sprintf('"%s"', missing), collapse=", "),"))")

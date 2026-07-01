@@ -37,13 +37,14 @@ jobs:
 
       - name: Download baseline (urls.RData) from Google Drive
         env:
-          GDRIVE_KEY_JSON: ${{ secrets.GDRIVE_KEY_JSON }}
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
-          echo "$GDRIVE_KEY_JSON" > gdrive_key.json
           Rscript - << 'RSCRIPT'
           library(googledrive)
-          drive_auth(path = "gdrive_key.json")
+          decoded <- base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN"))
+          writeBin(decoded, "gdrive_token.rds")
+          drive_auth(token = readRDS("gdrive_token.rds"))
           folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
 
           hits <- drive_ls(as_id(folder_id), pattern = "^taladnudbaan_urls\\.RData$")
@@ -62,7 +63,9 @@ jobs:
         run: |
           Rscript - << 'RSCRIPT'
           library(googledrive)
-          drive_auth(path = "gdrive_key.json")
+          decoded <- base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN"))
+          writeBin(decoded, "gdrive_token.rds")
+          drive_auth(token = readRDS("gdrive_token.rds"))
           folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
           stamp     <- format(Sys.Date(), "%Y%m%d")
 
@@ -70,14 +73,16 @@ jobs:
           upload_new <- function(local) {
             if (!file.exists(local)) { message("ข้าม (ไม่มีไฟล์): ", local); return(invisible()) }
             drive_upload(local, path = as_id(folder_id),
-                         name = basename(local), overwrite = FALSE)
+                         name = basename(local), overwrite = FALSE,
+                         query = list(supportsAllDrives = "true"))
             message("uploaded (new): ", basename(local))
           }
 
           # baseline -> overwrite ทับของเดิม (รอบถัดไปโหลดเวอร์ชันใหม่)
           upload_overwrite <- function(local) {
             if (!file.exists(local)) { message("ข้าม (ไม่มีไฟล์): ", local); return(invisible()) }
-            drive_put(local, path = as_id(folder_id), name = basename(local))
+            drive_put(local, path = as_id(folder_id), name = basename(local),
+                      query = list(supportsAllDrives = "true"))
             message("uploaded (overwrite): ", basename(local))
           }
 
@@ -89,7 +94,7 @@ jobs:
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f gdrive_key.json
+        run: rm -f gdrive_token.rds
 
       - name: Notify email
         if: always()

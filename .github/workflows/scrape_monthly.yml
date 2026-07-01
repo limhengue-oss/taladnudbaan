@@ -30,19 +30,18 @@ jobs:
 
       - name: Install R packages
         run: |
-          Rscript -e 'install.packages(c("dplyr", "readr", "stringr", "googledrive"))'
-
-      - name: Write Google service account key
-        run: echo '${{ secrets.GDRIVE_KEY_JSON }}' > gdrive_key.json
+          Rscript -e 'install.packages(c("dplyr", "readr", "stringr", "googledrive", "base64enc"))'
 
       - name: Download properties.csv from Drive
         env:
-          GDRIVE_KEY: gdrive_key.json
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           Rscript - << 'RSCRIPT'
           library(googledrive)
-          drive_auth(path = Sys.getenv("GDRIVE_KEY"))
+          decoded <- base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN"))
+          writeBin(decoded, "gdrive_token.rds")
+          drive_auth(token = readRDS("gdrive_token.rds"))
           folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
 
           # โหลด properties.csv (ไฟล์ใหญ่ เก็บบน Drive เฉพาะ monthly run)
@@ -61,13 +60,13 @@ jobs:
 
       - name: Run monthly rebuild
         env:
-          GDRIVE_KEY: gdrive_key.json
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: Rscript scrape_monthly.R
 
       - name: Cleanup key
         if: always()
-        run: rm -f gdrive_key.json
+        run: rm -f gdrive_token.rds
 
       - name: Notify email
         if: always()
