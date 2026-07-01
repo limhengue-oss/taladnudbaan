@@ -1,0 +1,127 @@
+name: scrape-daily
+
+on:
+  schedule:
+    - cron: '0 17 * * *'   # ทุกวัน 17:00 UTC = 00:00 ICT
+  workflow_dispatch:         # กดรันเองได้จาก Actions tab
+
+concurrency:
+  group: taladnudbaan-scrape
+  cancel-in-progress: false  # ห้าม cancel job ที่กำลังรันอยู่
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300     # เผื่อไว้ 5 ชั่วโมง (GitHub cap = 360 นาที)
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
+
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c(
+            "rvest", "dplyr", "stringr", "purrr",
+            "readr", "httr", "jsonlite", "googledrive", "blastula"
+          ))'
+
+      - name: Download baseline (urls.RData) from Google Drive
+        env:
+          GDRIVE_KEY_JSON: ${{ secrets.GDRIVE_KEY_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          echo "$GDRIVE_KEY_JSON" > gdrive_key.json
+          Rscript - << 'RSCRIPT'
+          library(googledrive)
+          drive_auth(path = "gdrive_key.json")
+          folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
+
+          hits <- drive_ls(as_id(folder_id), pattern = "^taladnudbaan_urls\\.RData$")
+          if (nrow(hits) == 0) stop("ไม่พบ taladnudbaan_urls.RData บน Drive")
+          drive_download(hits[1, ], path = "taladnudbaan_urls.RData", overwrite = TRUE)
+          message("downloaded: taladnudbaan_urls.RData")
+          RSCRIPT
+
+      - name: Run daily scrape
+        run: Rscript scrape_daily.R
+
+      - name: Upload output files to Google Drive
+        if: success()
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          Rscript - << 'RSCRIPT'
+          library(googledrive)
+          drive_auth(path = "gdrive_key.json")
+          folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
+          stamp     <- format(Sys.Date(), "%Y%m%d")
+
+          # ไฟล์ลงวันที่ -> upload ใหม่ (เก็บทุก version ไม่ทับ)
+          upload_new <- function(local) {
+            if (!file.exists(local)) { message("ข้าม (ไม่มีไฟล์): ", local); return(invisible()) }
+            drive_upload(local, path = as_id(folder_id),
+                         name = basename(local), overwrite = FALSE)
+            message("uploaded (new): ", basename(local))
+          }
+
+          # baseline -> overwrite ทับของเดิม (รอบถัดไปโหลดเวอร์ชันใหม่)
+          upload_overwrite <- function(local) {
+            if (!file.exists(local)) { message("ข้าม (ไม่มีไฟล์): ", local); return(invisible()) }
+            drive_put(local, path = as_id(folder_id), name = basename(local))
+            message("uploaded (overwrite): ", basename(local))
+          }
+
+          upload_new(sprintf("list_%s.csv",          stamp))
+          upload_new(sprintf("changelog_%s.csv",     stamp))
+          upload_new(sprintf("detail_update_%s.csv", stamp))
+          upload_overwrite("taladnudbaan_urls.RData")
+          RSCRIPT
+
+      - name: Cleanup secrets
+        if: always()
+        run: rm -f gdrive_key.json
+
+      - name: Notify email
+        if: always()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          Rscript - << 'RSCRIPT'
+          library(blastula)
+          user   <- Sys.getenv("GMAIL_USER")
+          pass   <- Sys.getenv("GMAIL_APP_PASSWORD")
+          status <- Sys.getenv("JOB_STATUS")
+          stamp  <- format(Sys.Date(), "%Y%m%d")
+          if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
+
+          smtp_send(
+            compose_email(body = md(paste0(
+              "taladnudbaan weekly scrape: **", status, "**\n\n",
+              "วันที่: ", Sys.Date(), "\n",
+              "ไฟล์บน Drive: list_", stamp, ".csv | changelog_", stamp,
+              ".csv | detail_update_", stamp, ".csv"
+            ))),
+            to          = user,
+            from        = user,
+            subject     = paste0("[taladnudbaan] daily ", status, " ", stamp),
+            credentials = creds_envvar(
+              user        = user,
+              pass_envvar = "GMAIL_APP_PASSWORD",
+              host        = "smtp.gmail.com",
+              port        = 465,
+              use_ssl     = TRUE
+            )
+          )
+          RSCRIPT
