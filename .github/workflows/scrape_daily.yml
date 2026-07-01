@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false  # ห้าม cancel job ที่กำลังรันอยู่
 
 jobs:
-  weekly:
+  daily:
     runs-on: ubuntu-latest
     timeout-minutes: 300     # เผื่อไว้ 5 ชั่วโมง (GitHub cap = 360 นาที)
 
@@ -111,7 +111,7 @@ jobs:
 
           smtp_send(
             compose_email(body = md(paste0(
-              "taladnudbaan weekly scrape: **", status, "**\n\n",
+              "taladnudbaan daily scrape: **", status, "**\n\n",
               "วันที่: ", Sys.Date(), "\n",
               "ไฟล์บน Drive: list_", stamp, ".csv | changelog_", stamp,
               ".csv | detail_update_", stamp, ".csv"
