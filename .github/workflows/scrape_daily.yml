@@ -42,9 +42,8 @@ jobs:
         run: |
           Rscript - << 'RSCRIPT'
           library(googledrive)
-          decoded <- base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN"))
-          writeBin(decoded, "gdrive_token.rds")
-          drive_auth(token = readRDS("gdrive_token.rds"))
+          tok <- unserialize(memDecompress(base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN")), type = "gzip"))
+          drive_auth(token = tok, cache = FALSE)
           folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
 
           hits <- drive_ls(as_id(folder_id), pattern = "^taladnudbaan_urls\\.RData$")
@@ -63,9 +62,8 @@ jobs:
         run: |
           Rscript - << 'RSCRIPT'
           library(googledrive)
-          decoded <- base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN"))
-          writeBin(decoded, "gdrive_token.rds")
-          drive_auth(token = readRDS("gdrive_token.rds"))
+          tok <- unserialize(memDecompress(base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN")), type = "gzip"))
+          drive_auth(token = tok, cache = FALSE)
           folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
           stamp     <- format(Sys.Date(), "%Y%m%d")
 
@@ -94,7 +92,7 @@ jobs:
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f gdrive_token.rds
+        run: 
 
       - name: Notify email
         if: always()

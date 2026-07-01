@@ -39,9 +39,8 @@ jobs:
         run: |
           Rscript - << 'RSCRIPT'
           library(googledrive)
-          decoded <- base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN"))
-          writeBin(decoded, "gdrive_token.rds")
-          drive_auth(token = readRDS("gdrive_token.rds"))
+          tok <- unserialize(memDecompress(base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN")), type = "gzip"))
+          drive_auth(token = tok, cache = FALSE)
           folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
 
           # โหลด properties.csv (ไฟล์ใหญ่ เก็บบน Drive เฉพาะ monthly run)
@@ -66,7 +65,7 @@ jobs:
 
       - name: Cleanup key
         if: always()
-        run: rm -f gdrive_token.rds
+        run: 
 
       - name: Notify email
         if: always()

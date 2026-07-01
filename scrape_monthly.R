@@ -34,9 +34,8 @@ library(dplyr); library(readr); library(stringr); library(googledrive)
 drive_init <- function() {
   token_b64 <- Sys.getenv("GDRIVE_TOKEN")
   if (!nzchar(token_b64)) stop("ไม่พบ env GDRIVE_TOKEN")
-  decoded <- base64enc::base64decode(token_b64)
-  writeBin(decoded, "gdrive_token.rds")
-  drive_auth(token = readRDS("gdrive_token.rds"))
+  tok <- unserialize(memDecompress(base64enc::base64decode(token_b64), type = "gzip"))
+  drive_auth(token = tok, cache = FALSE)
   message("Drive auth OK")
 }
 
