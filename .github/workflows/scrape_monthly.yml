@@ -2,7 +2,7 @@ name: scrape-monthly
 
 on:
   schedule:
-    - cron: '0 18 1 * *'   # วันที่ 1 ของทุกเดือน 18:00 UTC = 01:00 ICT วันถัดไป
+    - cron: '0 18 1 * *'   # วันที่ 1 ของทุกเดือน 18:00 UTC = 01:00 ICT
   workflow_dispatch:
 
 concurrency:
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   monthly:
     runs-on: ubuntu-latest
-    timeout-minutes: 30     # แค่ rebuild ไม่ต้อง scrape -> เร็วมาก
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repo
@@ -26,46 +26,36 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev
 
       - name: Install R packages
         run: |
-          Rscript -e 'install.packages(c("dplyr", "readr", "stringr", "googledrive", "base64enc"))'
+          Rscript -e 'install.packages(c("dplyr", "readr", "stringr", "blastula"))'
 
-      - name: Download properties.csv from Drive
-        env:
-          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      - name: Setup rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: ${{ secrets.RCLONE_CONFIG }}
+
+      - name: Download files from Google Drive
         run: |
-          Rscript - << 'RSCRIPT'
-          library(googledrive)
-          tok <- unserialize(memDecompress(base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN")), type = "gzip"))
-          drive_auth(token = tok, cache = FALSE)
-          folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
+          rclone copy gdrive:taladnudbaan/taladnudbaan_properties.csv .
+          rclone copy gdrive:taladnudbaan/update_status.txt . || true
 
-          # โหลด properties.csv (ไฟล์ใหญ่ เก็บบน Drive เฉพาะ monthly run)
-          hits <- drive_ls(as_id(folder_id), pattern = "^taladnudbaan_properties\\.csv$")
-          if (nrow(hits) == 0) stop("ไม่พบ taladnudbaan_properties.csv บน Drive")
-          drive_download(hits[1,], path = "taladnudbaan_properties.csv", overwrite = TRUE)
-          message("downloaded: taladnudbaan_properties.csv")
-
-          # โหลด update_status.txt (เขียนโดย scrape_daily.R รอบล่าสุด)
-          hits2 <- drive_ls(as_id(folder_id), pattern = "^update_status\\.txt$")
-          if (nrow(hits2) > 0) {
-            drive_download(hits2[1,], path = "update_status.txt", overwrite = TRUE)
-            message("downloaded: update_status.txt -> ", readLines("update_status.txt"))
-          }
-          RSCRIPT
+      - name: Download changelog + detail_update of last month
+        run: |
+          prev_month=$(date -d "$(date +%Y-%m-01) -1 day" +%Y%m)
+          rclone copy gdrive:taladnudbaan/ . --include "changelog_${prev_month}*.csv"
+          rclone copy gdrive:taladnudbaan/ . --include "detail_update_${prev_month}*.csv"
 
       - name: Run monthly rebuild
-        env:
-          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: Rscript scrape_monthly.R
 
-      - name: Cleanup key
-        if: always()
-        run: 
+      - name: Upload output files to Google Drive
+        if: success()
+        run: |
+          rclone copy taladnudbaan_properties.csv    gdrive:taladnudbaan/
+          rclone copy taladnudbaan_properties_*.csv  gdrive:taladnudbaan/ || true
 
       - name: Notify email
         if: always()
@@ -74,7 +64,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          Rscript - << 'RSCRIPT'
+          Rscript -e '
           library(blastula)
           user   <- Sys.getenv("GMAIL_USER")
           pass   <- Sys.getenv("GMAIL_APP_PASSWORD")
@@ -95,5 +85,4 @@ jobs:
               port        = 465,
               use_ssl     = TRUE
             )
-          )
-          RSCRIPT
+          )'

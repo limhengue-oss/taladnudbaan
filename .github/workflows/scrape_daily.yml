@@ -3,16 +3,16 @@ name: scrape-daily
 on:
   schedule:
     - cron: '0 17 * * *'   # ทุกวัน 17:00 UTC = 00:00 ICT
-  workflow_dispatch:         # กดรันเองได้จาก Actions tab
+  workflow_dispatch:
 
 concurrency:
   group: taladnudbaan-scrape
-  cancel-in-progress: false  # ห้าม cancel job ที่กำลังรันอยู่
+  cancel-in-progress: false
 
 jobs:
   daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 300     # เผื่อไว้ 5 ชั่วโมง (GitHub cap = 360 นาที)
+    timeout-minutes: 300
 
     steps:
       - name: Checkout repo
@@ -32,67 +32,29 @@ jobs:
         run: |
           Rscript -e 'install.packages(c(
             "rvest", "dplyr", "stringr", "purrr",
-            "readr", "httr", "jsonlite", "googledrive", "blastula"
+            "readr", "httr", "jsonlite", "blastula"
           ))'
 
-      - name: Download baseline (urls.RData) from Google Drive
-        env:
-          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-        run: |
-          Rscript - << 'RSCRIPT'
-          library(googledrive)
-          tok <- unserialize(memDecompress(base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN")), type = "gzip"))
-          drive_auth(token = tok, cache = FALSE)
-          folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
+      - name: Setup rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: ${{ secrets.RCLONE_CONFIG }}
 
-          hits <- drive_ls(as_id(folder_id), pattern = "^taladnudbaan_urls\\.RData$")
-          if (nrow(hits) == 0) stop("ไม่พบ taladnudbaan_urls.RData บน Drive")
-          drive_download(hits[1, ], path = "taladnudbaan_urls.RData", overwrite = TRUE)
-          message("downloaded: taladnudbaan_urls.RData")
-          RSCRIPT
+      - name: Download baseline from Google Drive
+        run: rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
 
       - name: Run daily scrape
         run: Rscript scrape_daily.R
 
       - name: Upload output files to Google Drive
         if: success()
-        env:
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
-          Rscript - << 'RSCRIPT'
-          library(googledrive)
-          tok <- unserialize(memDecompress(base64enc::base64decode(Sys.getenv("GDRIVE_TOKEN")), type = "gzip"))
-          drive_auth(token = tok, cache = FALSE)
-          folder_id <- Sys.getenv("GDRIVE_FOLDER_ID")
-          stamp     <- format(Sys.Date(), "%Y%m%d")
-
-          # ไฟล์ลงวันที่ -> upload ใหม่ (เก็บทุก version ไม่ทับ)
-          upload_new <- function(local) {
-            if (!file.exists(local)) { message("ข้าม (ไม่มีไฟล์): ", local); return(invisible()) }
-            drive_upload(local, path = as_id(folder_id),
-                         name = basename(local), overwrite = FALSE,
-                         query = list(supportsAllDrives = "true"))
-            message("uploaded (new): ", basename(local))
-          }
-
-          # baseline -> overwrite ทับของเดิม (รอบถัดไปโหลดเวอร์ชันใหม่)
-          upload_overwrite <- function(local) {
-            if (!file.exists(local)) { message("ข้าม (ไม่มีไฟล์): ", local); return(invisible()) }
-            drive_put(local, path = as_id(folder_id), name = basename(local),
-                      query = list(supportsAllDrives = "true"))
-            message("uploaded (overwrite): ", basename(local))
-          }
-
-          upload_new(sprintf("list_%s.csv",          stamp))
-          upload_new(sprintf("changelog_%s.csv",     stamp))
-          upload_new(sprintf("detail_update_%s.csv", stamp))
-          upload_overwrite("taladnudbaan_urls.RData")
-          RSCRIPT
-
-      - name: Cleanup secrets
-        if: always()
-        run: 
+          stamp=$(date +%Y%m%d)
+          rclone copy list_${stamp}.csv           gdrive:taladnudbaan/
+          rclone copy changelog_${stamp}.csv      gdrive:taladnudbaan/
+          rclone copy detail_update_${stamp}.csv  gdrive:taladnudbaan/
+          rclone copy taladnudbaan_urls.RData     gdrive:taladnudbaan/
+          rclone copy update_status.txt           gdrive:taladnudbaan/
 
       - name: Notify email
         if: always()
@@ -101,20 +63,17 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          Rscript - << 'RSCRIPT'
+          Rscript -e '
           library(blastula)
           user   <- Sys.getenv("GMAIL_USER")
           pass   <- Sys.getenv("GMAIL_APP_PASSWORD")
           status <- Sys.getenv("JOB_STATUS")
           stamp  <- format(Sys.Date(), "%Y%m%d")
           if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
-
           smtp_send(
             compose_email(body = md(paste0(
               "taladnudbaan daily scrape: **", status, "**\n\n",
-              "วันที่: ", Sys.Date(), "\n",
-              "ไฟล์บน Drive: list_", stamp, ".csv | changelog_", stamp,
-              ".csv | detail_update_", stamp, ".csv"
+              "วันที่: ", Sys.Date()
             ))),
             to          = user,
             from        = user,
@@ -126,5 +85,4 @@ jobs:
               port        = 465,
               use_ssl     = TRUE
             )
-          )
-          RSCRIPT
+          )'
