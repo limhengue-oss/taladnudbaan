@@ -2,7 +2,7 @@ name: scrape-weekly
 
 on:
   schedule:
-    - cron: '0 17 * * 6'   # ส. 17:00 UTC = อา. 00:00 ICT
+    - cron: '0 17 * * *'   # ทุกวัน 17:00 UTC = 00:00 ICT
   workflow_dispatch:         # กดรันเองได้จาก Actions tab
 
 concurrency:
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   weekly:
     runs-on: ubuntu-latest
-    timeout-minutes: 300     # list ~2,773 หน้า x ~3.5s ≈ 2.7 ชม. + detail + buffer (GitHub cap = 360 นาที)
+    timeout-minutes: 300     # เผื่อไว้ 5 ชั่วโมง (GitHub cap = 360 นาที)
 
     steps:
       - name: Checkout repo

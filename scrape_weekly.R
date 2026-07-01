@@ -18,7 +18,8 @@ CONFIG <- list(
   sleep_sec   = 0.2,
   max_retries = 4L,
   backoff_sec = 20,
-  max_pages   = 9000L,
+  max_pages          = 9000L,
+  max_detail_per_run = 10000L,  # จำกัด detail scrape ต่อรอบ รายการที่เกินค้างไว้รอรอบถัดไป
   
   # input files (จาก scrape ครั้งแรก)
   baseline_list_rdata = "taladnudbaan_urls.RData",     # url_df (page, url, updated_date)
@@ -321,10 +322,14 @@ flagged <- new_list |>
   mutate(as_of = stamp)
 
 # scrape detail เฉพาะ new + updated
-to_scrape <- unique(c(d$new_urls, d$updated_urls))
-if (length(to_scrape) > 0) {
-  message("=== SCRAPE DETAIL: ", length(to_scrape), " รายการ ===")
-  detail_update <- scrape_details(to_scrape)
+to_scrape_all  <- unique(c(d$new_urls, d$updated_urls))
+to_scrape_done <- head(to_scrape_all, CONFIG$max_detail_per_run)
+to_scrape_todo <- setdiff(to_scrape_all, to_scrape_done)   # เกิน limit -> ค้างไว้รอรอบถัดไป
+
+if (length(to_scrape_done) > 0) {
+  message("=== SCRAPE DETAIL: ", length(to_scrape_done), " / ", length(to_scrape_all),
+          " รายการ (เกิน limit ", length(to_scrape_todo), " รายการ -> รอรอบถัดไป) ===")
+  detail_update <- scrape_details(to_scrape_done)
 } else {
   message("ไม่มีรายการใหม่หรืออัพเดท")
   detail_update <- empty_row(NA)[0, ]
@@ -339,14 +344,26 @@ write_excel_csv(flagged,       f_list)
 write_excel_csv(d$changelog,   f_change)
 write_excel_csv(detail_update, f_detail)
 
-# อัพเดท baseline: url_df ใหม่ เก็บ updated_date จาก list page
-url_df <- flagged |>
+# อัพเดท baseline:
+# - รายการที่ scrape detail เสร็จแล้ว -> updated_date ใหม่จาก list page (ถือว่า processed)
+# - รายการที่เกิน limit (to_scrape_todo) -> คง updated_date เดิมจาก baseline ไว้
+#   -> รอบถัดไป diff จะยังเห็นว่า updated และทำต่อ
+url_df_new <- flagged |>
   filter(status != "removed") |>
-  transmute(page = list_page, url, updated_date)
-save(url_df, file = CONFIG$baseline_list_rdata)
+  transmute(page = list_page, url, updated_date) |>
+  mutate(updated_date = ifelse(url %in% to_scrape_todo,
+                               baseline_detail$updated_date[match(url, baseline_detail$url)],
+                               updated_date))
+save(url_df_new, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
+if (length(to_scrape_todo) > 0) {
+  message("  หมายเหตุ: ", length(to_scrape_todo),
+          " รายการยังค้างอยู่ -> รอบถัดไปจะทำต่อ")
+}
 
 message("=== เสร็จ ===")
 message("  ", f_list,   " (", nrow(flagged),       " แถว)")
 message("  ", f_change, " (", nrow(d$changelog),   " แถว)")
 message("  ", f_detail, " (", nrow(detail_update), " แถว)")
+if (length(to_scrape_todo) > 0)
+  message("  ยังค้าง: ", length(to_scrape_todo), " รายการ (new+updated ที่ยังไม่ได้ scrape)")
