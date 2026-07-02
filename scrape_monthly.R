@@ -7,16 +7,11 @@
 
 # ---- CONFIG -----------------------------------------------------------------
 CONFIG <- list(
-  work_dir        = "C:/Users/wasinr/OneDrive - Bank of Thailand/My Github/taladnudbaan",
   properties_file = "taladnudbaan_properties.csv",
   status_file     = "update_status.txt"
 )
 
 # ---- SETUP ------------------------------------------------------------------
-if (Sys.getenv("GITHUB_ACTIONS") != "true") {
-  if (!dir.exists(CONFIG$work_dir)) stop("ไม่พบ work_dir: ", CONFIG$work_dir)
-  setwd(CONFIG$work_dir)
-}
 
 pkgs <- c("dplyr", "readr", "stringr")
 missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]

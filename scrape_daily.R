@@ -12,7 +12,6 @@
 
 # ---- CONFIG -----------------------------------------------------------------
 CONFIG <- list(
-  work_dir  = "C:/Users/wasinr/OneDrive - Bank of Thailand/My Github/taladnudbaan",
   
   base_url  = "https://www.taladnudbaan.com/properties?sellers_only_out=on&order=price%20desc&view=list&page_length=60&",
   sleep_sec   = 0.2,
@@ -40,13 +39,9 @@ CONFIG <- list(
 )
 
 # ---- SETUP ------------------------------------------------------------------
-# บนเครื่องตัวเอง: setwd ไป work_dir | บน GitHub Actions: ใช้ working dir จาก actions/checkout แทน
-if (Sys.getenv("GITHUB_ACTIONS") != "true") {
-  if (!dir.exists(CONFIG$work_dir)) stop("ไม่พบ work_dir: ", CONFIG$work_dir)
-  setwd(CONFIG$work_dir)
-}
 
-pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite","base64enc")
+
+pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite")
 missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing) > 0) stop("ติดตั้ง packages ก่อน: install.packages(c(",
                               paste(sprintf('"%s"', missing), collapse=", "),"))")
@@ -348,13 +343,13 @@ write_excel_csv(detail_update, f_detail)
 # - รายการที่ scrape detail เสร็จแล้ว -> updated_date ใหม่จาก list page (ถือว่า processed)
 # - รายการที่เกิน limit (to_scrape_todo) -> คง updated_date เดิมจาก baseline ไว้
 #   -> รอบถัดไป diff จะยังเห็นว่า updated และทำต่อ
-url_df_new <- flagged |>
+url_df <- flagged |>
   filter(status != "removed") |>
   transmute(page = list_page, url, updated_date) |>
   mutate(updated_date = ifelse(url %in% to_scrape_todo,
                                baseline_detail$updated_date[match(url, baseline_detail$url)],
                                updated_date))
-save(url_df_new, file = CONFIG$baseline_list_rdata)
+save(url_df, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
 if (length(to_scrape_todo) > 0) {
   message("  หมายเหตุ: ", length(to_scrape_todo),

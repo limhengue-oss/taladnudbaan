@@ -75,7 +75,7 @@ jobs:
               "taladnudbaan daily scrape: **", status, "**\n\n",
               "วันที่: ", Sys.Date()
             ))),
-            to          = user,
+            to          = c(user, "wasinr@bot.or.th"),
             from        = user,
             subject     = paste0("[taladnudbaan] daily ", status, " ", stamp),
             credentials = creds_envvar(
