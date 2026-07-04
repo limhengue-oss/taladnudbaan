@@ -1,13 +1,13 @@
 # =============================================================================
-# scrape_weekly.R
-# รันทุกวันอาทิตย์เที่ยงคืน (หรือกดรันเอง)
+# scrape_daily.R
+# รันทุกวัน 00:00 ICT (GitHub Actions)
 # 1) scrape list ใหม่ทั้งหมด
-# 2) diff vs baseline -> new / removed / updated (เช็คจาก updated_date)
-# 3) scrape detail เฉพาะ new + updated
+# 2) diff vs baseline -> new / removed / updated
+# 3) scrape detail เฉพาะ new + updated (ทีละ chunk เช็คเวลา)
 # output:
-#   list_YYYYMMDD.csv        <update scrape list> flagged
-#   changelog_YYYYMMDD.csv   สรุปการเปลี่ยนแปลง
-#   detail_update_YYYYMMDD.csv  detail ของ new + updated
+#   list_YYYYMMDD_HHMM.csv
+#   changelog_YYYYMMDD_HHMM.csv
+#   detail_update_YYYYMMDD_HHMM.csv
 # =============================================================================
 
 # ---- CONFIG -----------------------------------------------------------------
@@ -19,7 +19,7 @@ CONFIG <- list(
   backoff_sec      = 20,
   max_pages        = 9000L,
   chunk_size       = 1000L,   # scrape detail ทีละกี่รายการ
-  time_limit_min   = 250L     # หยุดถ้าผ่านไปแล้วกี่นาทีนับจากเริ่ม workflow
+  time_limit_min   = 250L,    # หยุดถ้าผ่านไปแล้วกี่นาทีนับจากเริ่ม workflow
   
   # input files (จาก scrape ครั้งแรก)
   baseline_list_rdata = "taladnudbaan_urls.RData",     # url_df (page, url, updated_date)
@@ -48,7 +48,7 @@ if (length(missing) > 0) stop("ติดตั้ง packages ก่อน: inst
                               paste(sprintf('"%s"', missing), collapse=", "),"))")
 library(rvest); library(dplyr); library(stringr); library(purrr); library(readr)
 
-stamp <- format(Sys.Date(), "%Y%m%d")
+stamp <- format(Sys.time(), "%Y%m%d_%H%M")
 
 # ---- FETCH ------------------------------------------------------------------
 fetch_html <- function(url, attempt = 1L) {
@@ -357,6 +357,7 @@ f_detail  <- sprintf("detail_update_%s.csv", stamp)
 write_excel_csv(done_flagged,  f_list)
 write_excel_csv(done_change,   f_change)
 write_excel_csv(detail_update, f_detail)
+writeLines(c(f_list, f_change, f_detail), "output_files.txt")
 
 # อัพเดท baseline:
 # - ที่ scrape แล้ว -> updated_date ใหม่
@@ -370,18 +371,16 @@ url_df <- flagged |>
 save(url_df, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
 
+n_total     <- length(to_scrape_all)
+n_done      <- nrow(detail_update)
 n_unupdated <- length(to_scrape_todo)
-message("=== เสร็จ ===")
-message("  ", f_list,   " (", nrow(done_flagged),  " แถว)")
-message("  ", f_change, " (", nrow(done_change),   " แถว)")
-message("  ", f_detail, " (", nrow(detail_update), " แถว)")
 
 if (n_unupdated == 0) {
   message("✅ ALL UPDATED")
-  update_status <- "all_updated"
+  update_status <- paste0("all_updated|total:", n_total, "|done:", n_done)
 } else {
   message("⏳ UNUPDATED: ยังค้างอยู่ ", n_unupdated, " รายการ")
-  update_status <- paste0("unupdated:", n_unupdated)
+  update_status <- paste0("unupdated:", n_unupdated, "|total:", n_total, "|done:", n_done)
 }
 writeLines(update_status, "update_status.txt")
 message("เขียน update_status.txt -> ", update_status)

@@ -44,8 +44,6 @@ jobs:
         run: rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
 
       - name: Run daily scrape
-        env:
-          WORKFLOW_START_EPOCH: ${{ github.run_attempt }}
         run: |
           export WORKFLOW_START_EPOCH=$(date +%s)
           Rscript scrape_daily.R
@@ -53,12 +51,11 @@ jobs:
       - name: Upload output files to Google Drive
         if: success()
         run: |
-          stamp=$(date +%Y%m%d_%H%M)
-          rclone copy list_${stamp}.csv           gdrive:taladnudbaan/
-          rclone copy changelog_${stamp}.csv      gdrive:taladnudbaan/
-          rclone copy detail_update_${stamp}.csv  gdrive:taladnudbaan/
-          rclone copy taladnudbaan_urls.RData     gdrive:taladnudbaan/
-          rclone copy update_status.txt           gdrive:taladnudbaan/
+          while IFS= read -r f; do
+            rclone copy "$f" gdrive:taladnudbaan/
+          done < output_files.txt
+          rclone copy taladnudbaan_urls.RData gdrive:taladnudbaan/
+          rclone copy update_status.txt       gdrive:taladnudbaan/
 
       - name: Notify email
         if: always()
@@ -74,10 +71,21 @@ jobs:
           status <- Sys.getenv("JOB_STATUS")
           stamp  <- format(Sys.Date(), "%Y%m%d")
           if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
+
+          # อ่าน update_status.txt
+          update_line <- tryCatch(readLines("update_status.txt", warn=FALSE)[1], error=function(e) "unknown")
+          parts  <- strsplit(update_line, "\\|")[[1]]
+          total  <- sub("total:", "", parts[grepl("^total:", parts)])
+          done   <- sub("done:",  "", parts[grepl("^done:",  parts)])
+          todo   <- if (grepl("^unupdated:", parts[1])) sub("unupdated:", "", parts[1]) else "0"
+          summary_line <- paste0("อัพเดทแล้ว: ", done, " / ", total,
+                                 " | ค้าง: ", todo, " รายการ")
+
           smtp_send(
             compose_email(body = md(paste0(
               "taladnudbaan daily scrape: **", status, "**\n\n",
-              "วันที่: ", Sys.Date()
+              "วันที่: ", Sys.Date(), "\n\n",
+              summary_line
             ))),
             to          = c(user, "wasinr@bot.or.th"),
             from        = user,
