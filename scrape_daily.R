@@ -14,11 +14,12 @@
 CONFIG <- list(
   
   base_url  = "https://www.taladnudbaan.com/properties?sellers_only_out=on&order=price%20desc&view=list&page_length=60&",
-  sleep_sec   = 0.2,
-  max_retries = 4L,
-  backoff_sec = 20,
-  max_pages          = 9000L,
-  max_detail_per_run = 10000L,  # จำกัด detail scrape ต่อรอบ รายการที่เกินค้างไว้รอรอบถัดไป
+  sleep_sec        = 0.1,
+  max_retries      = 4L,
+  backoff_sec      = 20,
+  max_pages        = 9000L,
+  chunk_size       = 1000L,   # scrape detail ทีละกี่รายการ
+  time_limit_min   = 250L     # หยุดถ้าผ่านไปแล้วกี่นาทีนับจากเริ่ม workflow
   
   # input files (จาก scrape ครั้งแรก)
   baseline_list_rdata = "taladnudbaan_urls.RData",     # url_df (page, url, updated_date)
@@ -316,33 +317,50 @@ flagged <- new_list |>
   ) |>
   mutate(as_of = stamp)
 
-# scrape detail เฉพาะ new + updated
-to_scrape_all  <- unique(c(d$new_urls, d$updated_urls))
-to_scrape_done <- head(to_scrape_all, CONFIG$max_detail_per_run)
-to_scrape_todo <- setdiff(to_scrape_all, to_scrape_done)   # เกิน limit -> ค้างไว้รอรอบถัดไป
+# scrape detail เฉพาะ new + updated (loop ทีละ chunk_size เช็คเวลาหลังแต่ละ loop)
+to_scrape_all <- unique(c(d$new_urls, d$updated_urls))
+start_time    <- as.numeric(Sys.getenv("WORKFLOW_START_EPOCH", unset = as.character(as.numeric(Sys.time()))))
+detail_done   <- list()
+to_scrape_todo <- to_scrape_all  # เริ่มต้น = ยังไม่ได้ทำทั้งหมด
 
-if (length(to_scrape_done) > 0) {
-  message("=== SCRAPE DETAIL: ", length(to_scrape_done), " / ", length(to_scrape_all),
-          " รายการ (เกิน limit ", length(to_scrape_todo), " รายการ -> รอรอบถัดไป) ===")
-  detail_update <- scrape_details(to_scrape_done)
-} else {
+if (length(to_scrape_all) == 0) {
   message("ไม่มีรายการใหม่หรืออัพเดท")
-  detail_update <- empty_row(NA)[0, ]
+} else {
+  chunks <- split(to_scrape_all, ceiling(seq_along(to_scrape_all) / CONFIG$chunk_size))
+  message("=== SCRAPE DETAIL: ", length(to_scrape_all), " รายการ | ",
+          length(chunks), " chunks x ", CONFIG$chunk_size, " ===")
+  for (i in seq_along(chunks)) {
+    elapsed_min <- (as.numeric(Sys.time()) - start_time) / 60
+    if (elapsed_min >= CONFIG$time_limit_min) {
+      message(sprintf("  [chunk %d] หมดเวลา (%.1f นาที >= %d) -> หยุด",
+                      i, elapsed_min, CONFIG$time_limit_min))
+      break
+    }
+    message(sprintf("  [chunk %d/%d] %.1f นาทีผ่านไป", i, length(chunks), elapsed_min))
+    rows <- scrape_details(chunks[[i]])
+    detail_done[[i]] <- rows
+    to_scrape_todo <- setdiff(to_scrape_todo, chunks[[i]])
+  }
 }
 
-# เขียนไฟล์ output
+detail_update  <- if (length(detail_done) > 0) bind_rows(detail_done) else empty_row(NA)[0, ]
+done_urls      <- if (nrow(detail_update) > 0) detail_update$url else character(0)
+
+# output เฉพาะรายการที่ scrape แล้ว
+done_change    <- d$changelog |> filter(url %in% done_urls)
+done_flagged   <- flagged     |> filter(url %in% c(done_urls, d$removed_urls))
+
 f_list    <- sprintf("list_%s.csv",          stamp)
 f_change  <- sprintf("changelog_%s.csv",     stamp)
 f_detail  <- sprintf("detail_update_%s.csv", stamp)
 
-write_excel_csv(flagged,       f_list)
-write_excel_csv(d$changelog,   f_change)
+write_excel_csv(done_flagged,  f_list)
+write_excel_csv(done_change,   f_change)
 write_excel_csv(detail_update, f_detail)
 
 # อัพเดท baseline:
-# - รายการที่ scrape detail เสร็จแล้ว -> updated_date ใหม่จาก list page (ถือว่า processed)
-# - รายการที่เกิน limit (to_scrape_todo) -> คง updated_date เดิมจาก baseline ไว้
-#   -> รอบถัดไป diff จะยังเห็นว่า updated และทำต่อ
+# - ที่ scrape แล้ว -> updated_date ใหม่
+# - ที่ค้าง (to_scrape_todo) -> คง updated_date เดิม -> พรุ่งนี้ detect ว่า updated แล้วทำต่อ
 url_df <- flagged |>
   filter(status != "removed") |>
   transmute(page = list_page, url, updated_date) |>
@@ -351,26 +369,19 @@ url_df <- flagged |>
                                updated_date))
 save(url_df, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
-if (length(to_scrape_todo) > 0) {
-  message("  หมายเหตุ: ", length(to_scrape_todo),
-          " รายการยังค้างอยู่ -> รอบถัดไปจะทำต่อ")
-}
 
+n_unupdated <- length(to_scrape_todo)
 message("=== เสร็จ ===")
-message("  ", f_list,   " (", nrow(flagged),       " แถว)")
-message("  ", f_change, " (", nrow(d$changelog),   " แถว)")
+message("  ", f_list,   " (", nrow(done_flagged),  " แถว)")
+message("  ", f_change, " (", nrow(done_change),   " แถว)")
 message("  ", f_detail, " (", nrow(detail_update), " แถว)")
 
-# รายงานสถานะ unupdated (ใช้โดย monthly script ด้วย)
-n_unupdated <- length(to_scrape_todo)
 if (n_unupdated == 0) {
-  message("✅ ALL UPDATED: ไม่มีรายการค้าง")
+  message("✅ ALL UPDATED")
   update_status <- "all_updated"
 } else {
   message("⏳ UNUPDATED: ยังค้างอยู่ ", n_unupdated, " รายการ")
   update_status <- paste0("unupdated:", n_unupdated)
 }
-
-# เขียน status file -> monthly script อ่านก่อน rebuild
 writeLines(update_status, "update_status.txt")
 message("เขียน update_status.txt -> ", update_status)
