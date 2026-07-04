@@ -19,7 +19,7 @@ CONFIG <- list(
   backoff_sec      = 20,
   max_pages        = 9000L,
   chunk_size       = 1000L,   # scrape detail ทีละกี่รายการ
-  time_limit_min   = 250L,    # หยุดถ้าผ่านไปแล้วกี่นาทีนับจากเริ่ม workflow
+  time_limit_min   = 250L     # หยุดถ้าผ่านไปแล้วกี่นาทีนับจากเริ่ม workflow
   
   # input files (จาก scrape ครั้งแรก)
   baseline_list_rdata = "taladnudbaan_urls.RData",     # url_df (page, url, updated_date)

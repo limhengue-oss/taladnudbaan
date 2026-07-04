@@ -44,6 +44,8 @@ jobs:
         run: rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
 
       - name: Run daily scrape
+        env:
+          WORKFLOW_START_EPOCH: ${{ github.run_attempt }}
         run: |
           export WORKFLOW_START_EPOCH=$(date +%s)
           Rscript scrape_daily.R
