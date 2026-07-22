@@ -23,6 +23,7 @@ CONFIG <- list(
   
   # input files (จาก scrape ครั้งแรก)
   baseline_list_rdata = "taladnudbaan_urls.RData",     # url_df (page, url, updated_date)
+  pending_rdata        = "taladnudbaan_pending.RData",  # cache รายการค้าง (สำหรับ resume run ทุก 6 ชม.)
   
   user_agent = "Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)",
   
@@ -49,6 +50,9 @@ if (length(missing) > 0) stop("ติดตั้ง packages ก่อน: inst
 library(rvest); library(dplyr); library(stringr); library(purrr); library(readr)
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M")
+
+# RESUME_ONLY=true -> ไม่ scrape list ใหม่ ทำต่อจาก pending queue เดิม (ใช้กับ run ทุก 6 ชม. ระหว่างวัน)
+RESUME_ONLY <- toupper(Sys.getenv("RESUME_ONLY", "false")) == "TRUE"
 
 # ---- FETCH ------------------------------------------------------------------
 fetch_html <- function(url, attempt = 1L) {
@@ -294,31 +298,51 @@ load(CONFIG$baseline_list_rdata)   # -> url_df (page, url, updated_date)
 url_df <- url_df |> mutate(updated_date = normalize_date(updated_date))
 baseline_detail <- url_df |> select(url, updated_date)
 
-# scrape list ใหม่
-new_list <- scrape_all_list()
+if (RESUME_ONLY) {
+  message("=== RESUME MODE: ทำต่อจาก pending queue (ไม่ scrape list ใหม่) ===")
+  if (!file.exists(CONFIG$pending_rdata)) {
+    message("ไม่มี pending queue -> ไม่มีอะไรต้องทำ")
+    writeLines(character(0), "output_files.txt")
+    writeLines("no_pending", "update_status.txt")
+    quit(save = "no", status = 0)
+  }
+  load(CONFIG$pending_rdata)   # -> pending_urls, pending_flagged, pending_changelog
+  to_scrape_all <- pending_urls
+  flagged       <- pending_flagged
+  changelog_all <- pending_changelog
+  message(sprintf("  pending=%d รายการ", length(to_scrape_all)))
+} else {
+  # scrape list ใหม่
+  new_list <- scrape_all_list()
 
-# diff
-message("=== DIFF ===")
-d <- diff_lists(url_df, baseline_detail, new_list)
-message(sprintf("  new=%d  removed=%d  updated=%d",
-                length(d$new_urls), length(d$removed_urls), length(d$updated_urls)))
+  # diff
+  message("=== DIFF ===")
+  d <- diff_lists(url_df, baseline_detail, new_list)
+  message(sprintf("  new=%d  removed=%d  updated=%d",
+                  length(d$new_urls), length(d$removed_urls), length(d$updated_urls)))
 
-# flagged list
-flagged <- new_list |>
-  mutate(status = case_when(
-    url %in% d$new_urls     ~ "new",
-    url %in% d$updated_urls ~ "updated",
-    TRUE                    ~ "unchanged"
-  )) |>
-  bind_rows(
-    url_df |> filter(url %in% d$removed_urls) |>
-      transmute(url, updated_date = baseline_detail$updated_date[match(url, baseline_detail$url)],
-                list_page = page, status = "removed")
-  ) |>
-  mutate(as_of = stamp)
+  # flagged list
+  flagged <- new_list |>
+    mutate(status = case_when(
+      url %in% d$new_urls     ~ "new",
+      url %in% d$updated_urls ~ "updated",
+      TRUE                    ~ "unchanged"
+    )) |>
+    bind_rows(
+      url_df |> filter(url %in% d$removed_urls) |>
+        transmute(url, updated_date = baseline_detail$updated_date[match(url, baseline_detail$url)],
+                  list_page = page, status = "removed")
+    ) |>
+    mutate(as_of = stamp)
+
+  changelog_all <- d$changelog
+  to_scrape_all <- unique(c(d$new_urls, d$updated_urls))
+
+  # ตัด removed ออกจาก baseline ตอนนี้เลย (resume mode จะไม่รู้จัก removed อยู่แล้ว)
+  url_df <- url_df |> filter(!url %in% d$removed_urls)
+}
 
 # scrape detail เฉพาะ new + updated (loop ทีละ chunk_size เช็คเวลาหลังแต่ละ loop)
-to_scrape_all <- unique(c(d$new_urls, d$updated_urls))
 start_time    <- as.numeric(Sys.getenv("WORKFLOW_START_EPOCH", unset = as.character(as.numeric(Sys.time()))))
 detail_done   <- list()
 to_scrape_todo <- to_scrape_all  # เริ่มต้น = ยังไม่ได้ทำทั้งหมด
@@ -347,8 +371,9 @@ detail_update  <- if (length(detail_done) > 0) bind_rows(detail_done) else empty
 done_urls      <- if (nrow(detail_update) > 0) detail_update$url else character(0)
 
 # output เฉพาะรายการที่ scrape แล้ว
-done_change    <- d$changelog |> filter(url %in% done_urls)
-done_flagged   <- flagged     |> filter(url %in% c(done_urls, d$removed_urls))
+removed_urls_now <- if (RESUME_ONLY) character(0) else d$removed_urls
+done_change      <- changelog_all |> filter(url %in% done_urls)
+done_flagged     <- flagged       |> filter(url %in% c(done_urls, removed_urls_now))
 
 f_list    <- sprintf("list_%s.csv",          stamp)
 f_change  <- sprintf("changelog_%s.csv",     stamp)
@@ -359,17 +384,36 @@ write_excel_csv(done_change,   f_change)
 write_excel_csv(detail_update, f_detail)
 writeLines(c(f_list, f_change, f_detail), "output_files.txt")
 
-# อัพเดท baseline:
-# - ที่ scrape แล้ว -> updated_date ใหม่
-# - ที่ค้าง (to_scrape_todo) -> คง updated_date เดิม -> พรุ่งนี้ detect ว่า updated แล้วทำต่อ
-url_df <- flagged |>
-  filter(status != "removed") |>
-  transmute(page = list_page, url, updated_date) |>
-  mutate(updated_date = ifelse(url %in% to_scrape_todo,
-                               baseline_detail$updated_date[match(url, baseline_detail$url)],
-                               updated_date))
+# อัพเดท baseline: ที่ scrape แล้ว -> updated_date ใหม่ (patch เข้า url_df เดิม)
+done_dates <- flagged |> filter(url %in% done_urls) |> distinct(url, .keep_all = TRUE) |>
+  select(url, updated_date, list_page)
+
+if (RESUME_ONLY) {
+  # resume mode: patch เฉพาะรายการที่ scrape สำเร็จเข้า baseline เดิม ไม่แตะรายการอื่น
+  idx <- match(done_dates$url, url_df$url)
+  url_df$updated_date[idx[!is.na(idx)]] <- done_dates$updated_date[!is.na(idx)]
+} else {
+  # full mode: มี new_list ครบทุกหน้าอยู่แล้ว -> rebuild url_df จาก flagged (ตัด removed ออกแล้ว)
+  new_entries <- done_dates |> filter(!url %in% url_df$url) |>
+    transmute(page = list_page, url, updated_date)
+  url_df <- bind_rows(url_df, new_entries)
+  idx <- match(done_dates$url, url_df$url)
+  url_df$updated_date[idx[!is.na(idx)]] <- done_dates$updated_date[!is.na(idx)]
+}
 save(url_df, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
+
+# เก็บ pending queue สำหรับ resume run รอบถัดไป (ทุก 6 ชม.) ถ้ายังมีรายการค้าง
+if (length(to_scrape_todo) > 0) {
+  pending_urls      <- to_scrape_todo
+  pending_flagged   <- flagged       |> filter(url %in% to_scrape_todo)
+  pending_changelog <- changelog_all |> filter(url %in% to_scrape_todo)
+  save(pending_urls, pending_flagged, pending_changelog, file = CONFIG$pending_rdata)
+  message("บันทึก pending queue -> ", CONFIG$pending_rdata, " (", length(to_scrape_todo), " รายการค้าง)")
+} else if (file.exists(CONFIG$pending_rdata)) {
+  file.remove(CONFIG$pending_rdata)
+  message("ไม่มีรายการค้าง -> ลบ pending queue เดิม")
+}
 
 n_total     <- length(to_scrape_all)
 n_done      <- nrow(detail_update)

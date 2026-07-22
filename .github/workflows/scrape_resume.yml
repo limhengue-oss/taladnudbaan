@@ -1,8 +1,10 @@
-name: scrape-daily
+name: scrape-resume
 
+# ทำต่อจาก pending queue เดิมทุก 6 ชม. (ไม่ scrape list ใหม่) เผื่อ scrape_daily ทำไม่ทันในรอบเดียว
+# ช่วงเวลาเว้น 6 ชม. จากรอบหลักที่ 17:00 UTC (00:00 ICT) ของ scrape-daily.yml
 on:
   schedule:
-    - cron: '0 17 * * *'   # ทุกวัน 17:00 UTC = 00:00 ICT
+    - cron: '0 23,5,11 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -10,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  daily:
+  resume:
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -40,12 +42,15 @@ jobs:
         with:
           rclone_config: ${{ secrets.RCLONE_CONFIG }}
 
-      - name: Download baseline from Google Drive
-        run: rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
+      - name: Download baseline + pending queue from Google Drive
+        run: |
+          rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
+          rclone copy gdrive:taladnudbaan/taladnudbaan_pending.RData . || true
 
-      - name: Run daily scrape
+      - name: Resume scrape (skip list re-scrape)
         run: |
           export WORKFLOW_START_EPOCH=$(date +%s)
+          export RESUME_ONLY=true
           Rscript scrape_daily.R
 
       - name: Upload output files to Google Drive
@@ -74,11 +79,14 @@ jobs:
           user   <- Sys.getenv("GMAIL_USER")
           pass   <- Sys.getenv("GMAIL_APP_PASSWORD")
           status <- Sys.getenv("JOB_STATUS")
-          stamp  <- format(Sys.Date(), "%Y%m%d")
+          stamp  <- format(Sys.time(), "%Y%m%d_%H%M")
           if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
 
-          # อ่าน update_status.txt
           update_line <- tryCatch(readLines("update_status.txt", warn=FALSE)[1], error=function(e) "unknown")
+
+          # ไม่มี pending -> ไม่ต้องส่งเมล กัน spam ทุก 6 ชม.
+          if (identical(update_line, "no_pending") && identical(status, "success")) quit(save = "no")
+
           parts  <- strsplit(update_line, "\\|")[[1]]
           total  <- sub("total:", "", parts[grepl("^total:", parts)])
           done   <- sub("done:",  "", parts[grepl("^done:",  parts)])
@@ -88,13 +96,13 @@ jobs:
 
           smtp_send(
             compose_email(body = md(paste0(
-              "taladnudbaan daily scrape: **", status, "**\n\n",
-              "วันที่: ", Sys.Date(), "\n\n",
+              "taladnudbaan resume scrape: **", status, "**\n\n",
+              "เวลา: ", Sys.time(), "\n\n",
               summary_line
             ))),
             to          = c(user, "wasinr@bot.or.th"),
             from        = user,
-            subject     = paste0("[taladnudbaan] daily ", status, " ", stamp),
+            subject     = paste0("[taladnudbaan] resume ", status, " ", stamp),
             credentials = creds_envvar(
               user        = user,
               pass_envvar = "GMAIL_APP_PASSWORD",
