@@ -63,9 +63,11 @@ detail_update_files <- list.files(".", pattern = paste0("^detail_update_", pm, "
 if (length(changelog_files) == 0) stop("ไม่พบ changelog ของเดือน ", pm)
 
 changelog <- bind_rows(lapply(changelog_files, read_csv, col_types = cols(.default = "c")))
-detail_update <- if (length(detail_update_files) > 0)
+detail_update <- if (length(detail_update_files) > 0) {
   bind_rows(lapply(detail_update_files, read_csv, col_types = cols(.default = "c")))
-else props[0, ]
+} else {
+  props[0, ]
+}
 
 message("  changelog: ", nrow(changelog), " แถว")
 message("  detail_update: ", nrow(detail_update), " แถว")
