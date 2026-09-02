@@ -57,8 +57,12 @@ if (length(missing) > 0) stop("ติดตั้ง packages ก่อน: inst
 library(rvest); library(dplyr); library(stringr); library(purrr); library(readr)
 library(future); library(furrr)
 
+# งานนี้เป็น I/O-bound (รอ network response เป็นหลัก ไม่ใช่ CPU-heavy)
+# future/parallelly มี hard limit กันตั้ง worker เกิน 300% ของ CPU cores จริงโดย default
+# (เผื่อ CPU-bound task) ไม่เหมาะกับงาน scrape ที่ CPU ว่างเกือบตลอด -> ปลดล็อกตรงนี้
+options(parallelly.maxWorkers.localhost = Inf)
 plan(multisession, workers = WORKERS)
-message("=== parallel workers = ", WORKERS, " ===")
+message("=== parallel workers = ", WORKERS, " (CPU cores ที่มีจริง: ", parallel::detectCores(), ") ===")
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M")
 
