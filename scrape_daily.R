@@ -44,11 +44,17 @@ CONFIG <- list(
 # ---- SETUP ------------------------------------------------------------------
 
 
-pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite")
+pkgs <- c("rvest","dplyr","stringr","purrr","readr","httr","jsonlite","future","furrr")
 missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing) > 0) stop("ติดตั้ง packages ก่อน: install.packages(c(",
                               paste(sprintf('"%s"', missing), collapse=", "),"))")
 library(rvest); library(dplyr); library(stringr); library(purrr); library(readr)
+library(future); library(furrr)
+
+WORKERS <- as.integer(Sys.getenv("WORKERS", "10"))  # จำนวน request ทำพร้อมกัน (I/O-bound -> ปลอดภัย)
+options(parallelly.maxWorkers.localhost = Inf)       # GH Actions runner มีแค่ 4 CPU cores เตี้ยกว่า workers ที่ตั้ง
+plan(multisession, workers = WORKERS)
+message("=== parallel workers = ", WORKERS, " ===")
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M")
 
@@ -291,13 +297,14 @@ parse_detail <- function(url, page) {
   )
 }
 
+scrape_one <- function(url) {
+  tryCatch(parse_detail(url, fetch_html(url)),
+           error = function(e) { message("    ! ", conditionMessage(e)); empty_row(url) })
+}
+
 scrape_details <- function(urls) {
-  n <- length(urls)
-  bind_rows(imap(urls, function(u, i) {
-    message(sprintf("  [%d/%d] %s", i, n, u))
-    tryCatch(parse_detail(u, fetch_html(u)),
-             error = function(e) { message("    ! ", conditionMessage(e)); empty_row(u) })
-  }))
+  message(sprintf("  scrape %d รายการ (worker=%d) ...", length(urls), WORKERS))
+  bind_rows(future_map(urls, scrape_one, .options = furrr_options(seed = TRUE)))
 }
 
 # ---- MAIN -------------------------------------------------------------------

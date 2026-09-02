@@ -42,7 +42,7 @@ jobs:
         run: |
           Rscript -e 'install.packages(c(
             "rvest", "dplyr", "stringr", "purrr",
-            "readr", "httr", "jsonlite", "blastula"
+            "readr", "httr", "jsonlite", "blastula", "future", "furrr"
           ))'
 
       - name: Setup rclone
@@ -54,6 +54,8 @@ jobs:
         run: rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
 
       - name: Run daily scrape
+        env:
+          WORKERS: '10'
         run: |
           export WORKFLOW_START_EPOCH=$(date +%s)
           Rscript scrape_daily.R
