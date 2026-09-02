@@ -4,6 +4,13 @@ on:
   schedule:
     - cron: '0 17 * * *'   # ทุกวัน 17:00 UTC = 00:00 ICT
   workflow_dispatch:
+  # รันเพิ่มทันทีที่ scrape-monthly เสร็จ (full re-scrape + rebuild baseline รายเดือน)
+  # เพื่อไล่จับ url ที่อาจ "flicker" หายไปช่วงที่ full scrape กำลังไล่ list ของตัวเอง
+  # ใช้ workflow_run แทนตั้งเวลาคงที่ (เช่น 6:00 AM) เพราะ full scrape ใช้เวลาไม่แน่นอน
+  # (วัดได้จริง ~5.2 ชม. แต่ไม่การันตี) ตั้งเวลาคงที่เสี่ยง race กับตอนที่มันเสร็จจริง
+  workflow_run:
+    workflows: ["scrape-monthly"]
+    types: [completed]
 
 concurrency:
   group: taladnudbaan-scrape
@@ -11,6 +18,9 @@ concurrency:
 
 jobs:
   daily:
+    # ถ้า trigger มาจาก scrape-monthly ให้รันเฉพาะตอน monthly สำเร็จเท่านั้น
+    # (schedule/workflow_dispatch ปกติไม่ต้องเช็คเงื่อนไขนี้)
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 300
 

@@ -1,5 +1,9 @@
 name: scrape-monthly
 
+# rebuild taladnudbaan_properties.csv + taladnudbaan_urls.RData (baseline) จาก
+# full re-scrape จริง (scrape_monthly_full.R, REBUILD_MAIN=true) แทนของเดิมที่ diff
+# จาก changelog รายเดือน (scrape_monthly.R เดิม - เจอบั๊ก orphaned-month + removed ค้าง
+# สะสม จึงเลิกใช้) -> full scrape ไม่พึ่ง baseline/changelog เดิมเลย รีเซ็ตสะอาดทุกเดือน
 on:
   schedule:
     - cron: '0 18 1 * *'   # วันที่ 1 ของทุกเดือน 18:00 UTC = 01:00 ICT
@@ -12,7 +16,7 @@ concurrency:
 jobs:
   monthly:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 350   # เผื่อ ~5.2 ชม. ที่วัดได้จริงจากการทดสอบ WORKERS=20 บน GH Actions + buffer
 
     steps:
       - name: Checkout repo
@@ -26,36 +30,36 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
 
       - name: Install R packages
         run: |
-          Rscript -e 'install.packages(c("dplyr", "readr", "stringr", "blastula"))'
+          Rscript -e 'install.packages(c(
+            "rvest", "dplyr", "stringr", "purrr",
+            "readr", "httr", "jsonlite", "future", "furrr", "blastula"
+          ))'
 
       - name: Setup rclone
         uses: AnimMouse/setup-rclone@v1
         with:
           rclone_config: ${{ secrets.RCLONE_CONFIG }}
 
-      - name: Download files from Google Drive
-        run: |
-          rclone copy gdrive:taladnudbaan/taladnudbaan_properties.csv .
-          rclone copy gdrive:taladnudbaan/update_status.txt . || true
+      - name: Download current properties.csv (สำหรับ backup ก่อนเขียนทับ)
+        run: rclone copy gdrive:taladnudbaan/taladnudbaan_properties.csv . || true
 
-      - name: Download changelog + detail_update of last month
-        run: |
-          prev_month=$(date -d "$(date +%Y-%m-01) -1 day" +%Y%m)
-          rclone copy gdrive:taladnudbaan/ . --include "changelog_${prev_month}*.csv"
-          rclone copy gdrive:taladnudbaan/ . --include "detail_update_${prev_month}*.csv"
-
-      - name: Run monthly rebuild
-        run: Rscript scrape_monthly.R
+      - name: Run full re-scrape + rebuild properties.csv + baseline
+        env:
+          WORKERS: '20'
+          REBUILD_MAIN: 'true'
+        run: Rscript scrape_monthly_full.R
 
       - name: Upload output files to Google Drive
         if: success()
         run: |
-          rclone copy taladnudbaan_properties.csv    gdrive:taladnudbaan/
-          rclone copy taladnudbaan_properties_*.csv  gdrive:taladnudbaan/ || true
+          while IFS= read -r f; do
+            [ -n "$f" ] && rclone copy "$f" gdrive:taladnudbaan/
+          done < output_files_full.txt
+          rclone copy taladnudbaan_properties_backup_*.csv gdrive:taladnudbaan/ || true
 
       - name: Notify email
         if: always()
@@ -72,12 +76,12 @@ jobs:
           if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
           smtp_send(
             compose_email(body = md(paste0(
-              "taladnudbaan monthly rebuild: **", status, "**\n\n",
+              "taladnudbaan monthly full re-scrape + baseline rebuild: **", status, "**\n\n",
               "วันที่: ", Sys.Date()
             ))),
             to          = c(user, "wasinr@bot.or.th"),
             from        = user,
-            subject     = paste0("[taladnudbaan] monthly rebuild ", status, " ", format(Sys.Date(), "%Y%m%d")),
+            subject     = paste0("[taladnudbaan] monthly full-rebuild ", status, " ", format(Sys.Date(), "%Y%m%d")),
             credentials = creds_envvar(
               user        = user,
               pass_envvar = "GMAIL_APP_PASSWORD",

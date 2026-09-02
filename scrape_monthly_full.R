@@ -3,19 +3,24 @@
 # รัน manual จาก local เท่านั้น (ไม่ auto, ไม่ผูกกับ GitHub Actions)
 #
 # วัตถุประสงค์: scrape detail ของ "ทุก url ที่ list บนเว็บตอนนี้" ใหม่หมด
-# ไม่พึ่ง diff/baseline เหมือน scrape_daily.R -> ใช้เป็น audit / cross-check
-# ว่าข้อมูลจาก incremental pipeline (scrape_daily.R) ตกหล่นหรือไม่ตรงจริงหรือเปล่า
+# ไม่พึ่ง diff/baseline เหมือน scrape_daily.R -> ผลลัพธ์ไม่มี drift สะสมข้ามเดือน
 #
-# ไม่แตะ/ไม่เขียนทับ taladnudbaan_urls.RData หรือ taladnudbaan_properties.csv
-# ของ pipeline หลัก -> output แยกไฟล์ชัดเจน กัน overwrite ของจริงพลาด
+# 2 โหมด:
+#   ปกติ (REBUILD_MAIN ไม่ตั้ง/false): เขียนแค่ taladnudbaan_properties_full_<timestamp>.csv
+#     แยกไฟล์ ไม่แตะของจริง -> ใช้ audit/cross-check เทียบกับ incremental pipeline เฉยๆ
+#   REBUILD_MAIN=true: ใช้เป็น monthly rebuild ตัวจริงแทน scrape_monthly.R เดิม
+#     - เขียนทับ taladnudbaan_properties.csv (backup ไฟล์เดิมไว้ก่อน)
+#     - rebuild taladnudbaan_urls.RData (baseline) ใหม่หมดจากผลที่ scrape ได้รอบนี้
+#       (missed_count=0, detail_ok ตาม scrape_ok จริง) -> ให้ scrape_daily.R เริ่มต้นสะอาด
+#       ทุกเดือน ไม่มี drift สะสม (flicker/removed ค้าง) ข้ามเดือน
 #
 # งานนี้มี url เป็นแสน -> รันครั้งเดียวไม่จบแน่นอน มี resume ในตัว
 # (pending queue เก็บลง taladnudbaan_full_pending.RData, สั่งรันสคริปต์ซ้ำได้เรื่อยๆ
-#  จนกว่าจะครบ ค่อยเขียน taladnudbaan_properties_full_<timestamp>.csv ก้อนสุดท้าย)
+#  จนกว่าจะครบ ค่อยเขียนไฟล์ผลลัพธ์สุดท้าย)
 #
 # usage:
-#   Rscript scrape_monthly_full.R                       # รันจนจบ ไม่มี time limit
-#   TIME_LIMIT_MIN=180 Rscript scrape_monthly_full.R     # ถ้าอยากจำกัดเวลาต่อรอบ (นาที) ก็ยังทำได้
+#   Rscript scrape_monthly_full.R                                    # audit เฉยๆ ไม่แตะของจริง
+#   REBUILD_MAIN=true WORKERS=20 Rscript scrape_monthly_full.R        # rebuild ของจริงทั้งระบบ
 # =============================================================================
 
 CONFIG <- list(
@@ -26,7 +31,9 @@ CONFIG <- list(
   max_pages   = 9000L,
   chunk_size  = 500L,
 
-  pending_rdata = "taladnudbaan_full_pending.RData",   # -> full_urls, full_accum (list ของ tibble ที่ scrape ไปแล้ว)
+  pending_rdata        = "taladnudbaan_full_pending.RData",   # -> full_urls, full_accum (list ของ tibble ที่ scrape ไปแล้ว)
+  properties_file      = "taladnudbaan_properties.csv",
+  baseline_list_rdata  = "taladnudbaan_urls.RData",
 
   user_agent = "Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)",
 
@@ -44,6 +51,7 @@ CONFIG <- list(
 )
 
 TIME_LIMIT_MIN <- as.numeric(Sys.getenv("TIME_LIMIT_MIN", "Inf"))
+REBUILD_MAIN   <- toupper(Sys.getenv("REBUILD_MAIN", "false")) == "TRUE"
 
 WORKERS <- as.integer(Sys.getenv("WORKERS", "10"))  # จำนวน request ทำพร้อมกัน -> เร่งความเร็วรวมได้ ~WORKERS เท่า
                                                      # ค่านี้สูง เสี่ยงโดน rate-limit/block มากกว่าค่าต่ำ -> เฝ้าดู log ช่วง 30 นาทีแรก
@@ -85,31 +93,51 @@ fetch_html <- function(url, attempt = 1L) {
 # ---- LIST PAGE ----------------------------------------------------------------
 build_list_url <- function(page) paste0(CONFIG$base_url, "page=", page)
 
+# เก็บ url + updated_date (เหมือน scrape_daily.R) ไม่ใช่แค่ url เฉยๆ -> เอาไป rebuild
+# baseline (taladnudbaan_urls.RData) ได้ตรงๆ เวลา REBUILD_MAIN=true
 parse_list_page <- function(list_page) {
   anchors <- list_page |> html_elements(xpath = "//a[contains(@href, '/property/')]")
-  if (length(anchors) == 0) return(character(0))
-  hrefs <- html_attr(anchors, "href")
-  hrefs <- hrefs[!is.na(hrefs) & str_detect(hrefs, "/property/[^/]+/[^/]+/[^/]+")]
-  unique(url_absolute(hrefs, "https://www.taladnudbaan.com"))
+  n_anchors <- length(anchors)
+
+  rows <- map(anchors, function(a) {
+    href <- html_attr(a, "href")
+    if (is.na(href) || !str_detect(href, "/property/[^/]+/[^/]+/[^/]+")) return(NULL)
+    card <- tryCatch(
+      a |> html_element(xpath = "ancestor::*[contains(., 'ปรับปรุงล่าสุด')][1]"),
+      error = function(e) NULL
+    )
+    txt <- if (is.null(card) || length(card) == 0) "" else html_text2(card)
+    tibble(
+      url          = url_absolute(href, "https://www.taladnudbaan.com"),
+      updated_date = str_match(txt, "ปรับปรุงล่าสุด\\s*([0-9]{1,2} [^ ]+ [0-9]{4})")[, 2]
+    )
+  })
+
+  empty_schema <- tibble(url = character(0), updated_date = character(0))
+  n_matched <- sum(!map_lgl(rows, is.null))
+  if (n_anchors == 0 || n_matched == 0) return(empty_schema)
+
+  bind_rows(rows) |> distinct(url, .keep_all = TRUE)
 }
 
-scrape_all_list_urls <- function() {
+scrape_all_list <- function() {
   message("=== SCRAPE LIST (full) ===")
   acc <- list(); p <- 1L
   repeat {
     t0 <- Sys.time()
-    urls <- parse_list_page(fetch_html(build_list_url(p)))
+    df <- parse_list_page(fetch_html(build_list_url(p)))
     elapsed <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 2)
-    if (length(urls) == 0) { message("  หน้า ", p, " ว่าง -> จบ"); break }
-    acc[[p]] <- urls
-    message(sprintf("  หน้า %d -> %d url (%.2fs)", p, length(urls), elapsed))
+    if (nrow(df) == 0) { message("  หน้า ", p, " ว่าง -> จบ"); break }
+    df$page <- p
+    acc[[p]] <- df
+    message(sprintf("  หน้า %d -> %d url (%.2fs)", p, nrow(df), elapsed))
     p <- p + 1L
     if (p > CONFIG$max_pages) {
       message("  [WARN] ชน max_pages=", CONFIG$max_pages, " -> อาจตัดข้อมูลทิ้ง ตรวจสอบด้วย")
       break
     }
   }
-  unique(unlist(acc))
+  bind_rows(acc) |> distinct(url, .keep_all = TRUE)
 }
 
 # ---- DETAIL (เหมือน scrape_daily.R) -------------------------------------------
@@ -139,7 +167,7 @@ empty_row <- function(url) tibble(
   bedrooms=NA_character_, bathrooms=NA_character_, contact_name=NA_character_,
   agency_name=NA_character_, contact_info=NA_character_, source_url=NA_character_,
   posted_date=NA_character_, updated_date=NA_character_, is_auction=NA,
-  scraped_at=as.character(Sys.time())
+  scraped_at=as.character(Sys.time()), scrape_ok=FALSE
 )
 
 parse_detail <- function(url, page) {
@@ -197,7 +225,7 @@ parse_detail <- function(url, page) {
     bathrooms=fields[["bathrooms"]], contact_name=fields[["contact_name"]],
     agency_name=fields[["agency_name"]], contact_info=fields[["contact_info"]],
     source_url=source_url, posted_date=posted_date, updated_date=updated_date,
-    is_auction=is_auction, scraped_at=as.character(Sys.time())
+    is_auction=is_auction, scraped_at=as.character(Sys.time()), scrape_ok=TRUE
   )
 }
 
@@ -211,14 +239,14 @@ start_time <- as.numeric(Sys.time())
 
 if (file.exists(CONFIG$pending_rdata)) {
   message("=== พบ pending queue เดิม -> resume ===")
-  load(CONFIG$pending_rdata)   # -> full_urls, full_accum
+  load(CONFIG$pending_rdata)   # -> full_urls, full_accum, full_list_df
   message(sprintf("  เหลือ %d / เดิม %d (ทำไปแล้ว %d)",
                   length(full_urls), length(full_urls) + length(full_accum),
                   length(full_accum)))
 } else {
-  all_urls <- scrape_all_list_urls()
-  message("=== ทั้งหมด ", length(all_urls), " url (จะ scrape detail ใหม่หมดทุกตัว) ===")
-  full_urls  <- all_urls
+  full_list_df <- scrape_all_list()   # tibble(url, updated_date, page) -> เก็บไว้ rebuild baseline ตอนจบ
+  message("=== ทั้งหมด ", nrow(full_list_df), " url (จะ scrape detail ใหม่หมดทุกตัว) ===")
+  full_urls  <- full_list_df$url
   full_accum <- list()
 }
 
@@ -251,21 +279,50 @@ while (length(full_urls) > 0) {
   message(sprintf("  [batch done] %.1fs (%.2fs/รายการเฉลี่ย) เหลือ %d รายการ",
                   elapsed_sec, elapsed_sec / batch_size, length(full_urls)))
 
-  save(full_urls, full_accum, file = CONFIG$pending_rdata)
+  save(full_urls, full_accum, full_list_df, file = CONFIG$pending_rdata)
   message("  [checkpoint] เซฟ progress แล้ว")
 }
 
-save(full_urls, full_accum, file = CONFIG$pending_rdata)
+save(full_urls, full_accum, full_list_df, file = CONFIG$pending_rdata)
 
 if (length(full_urls) == 0) {
   message("=== SCRAPE ครบทุกรายการแล้ว -> เขียนไฟล์ผลลัพธ์ ===")
   result <- bind_rows(full_accum)
   out_file <- sprintf("taladnudbaan_properties_full_%s.csv", stamp)
   write_excel_csv(result, out_file)
-  file.remove(CONFIG$pending_rdata)
-  writeLines(out_file, "output_files_full.txt")
+  output_files <- out_file
   message("บันทึก -> ", out_file, " (", nrow(result), " แถว)")
-  message("เทียบกับ taladnudbaan_properties.csv (จาก incremental pipeline) ได้เลยเพื่อ audit")
+
+  if (REBUILD_MAIN) {
+    message("=== REBUILD_MAIN=true -> เขียนทับของจริงทั้งระบบ ===")
+
+    # 1) backup + เขียนทับ properties.csv หลัก
+    if (file.exists(CONFIG$properties_file)) {
+      suffix   <- format(file.info(CONFIG$properties_file)$mtime, "%Y%m%d")
+      old_name <- str_replace(CONFIG$properties_file, "\\.csv$", paste0("_backup_", suffix, ".csv"))
+      file.rename(CONFIG$properties_file, old_name)
+      message("  backup properties.csv เดิม -> ", old_name)
+    }
+    write_excel_csv(result, CONFIG$properties_file)
+    message("  เขียนทับ -> ", CONFIG$properties_file, " (", nrow(result), " แถว)")
+
+    # 2) rebuild baseline (taladnudbaan_urls.RData) ใหม่หมดจาก list ที่เพิ่ง scrape
+    #    -> missed_count=0 ทุกตัว, detail_ok ตาม scrape_ok จริงของรอบนี้ -> scrape_daily.R
+    #    เริ่มต้นสะอาดทุกเดือน ไม่มี flicker/removed ค้างสะสมข้ามเดือน
+    scrape_ok_map <- result |> distinct(url, .keep_all = TRUE) |> select(url, scrape_ok)
+    url_df <- full_list_df |>
+      select(page, url, updated_date) |>
+      left_join(scrape_ok_map, by = "url") |>
+      mutate(missed_count = 0L, detail_ok = coalesce(scrape_ok, FALSE)) |>
+      select(-scrape_ok)
+    save(url_df, file = CONFIG$baseline_list_rdata)
+    message("  rebuild baseline -> ", CONFIG$baseline_list_rdata, " (", nrow(url_df), " url)")
+
+    output_files <- c(output_files, CONFIG$properties_file, CONFIG$baseline_list_rdata)
+  }
+
+  file.remove(CONFIG$pending_rdata)
+  writeLines(output_files, "output_files_full.txt")
 } else {
   message(sprintf("=== ยังไม่จบ เหลือ %d รายการ -> รัน Rscript scrape_monthly_full.R ซ้ำเพื่อทำต่อ ===",
                   length(full_urls)))

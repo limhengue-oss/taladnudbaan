@@ -1,1 +1,13 @@
 .secrets
+
+# local/ = ที่เก็บ wrapper script + scratch data ที่ดึงมาเช็คเฉพาะกิจ - ไม่ commit ตัวข้อมูล
+local/*.csv
+local/*.RData
+local/logs/
+
+# output ชั่วคราวจากการรันสคริปต์ scrape/monthly ที่เครื่อง local
+*.csv
+*.RData
+output_files*.txt
+update_status.txt
+!taladnudbaan_urls.RData
