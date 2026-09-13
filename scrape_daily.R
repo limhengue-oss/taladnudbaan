@@ -318,6 +318,15 @@ load(CONFIG$baseline_list_rdata)   # -> url_df (page, url, updated_date, missed_
 if (!"missed_count" %in% names(url_df)) url_df$missed_count <- 0L
 if (!"detail_ok"    %in% names(url_df)) url_df$detail_ok    <- TRUE
 
+# กันพัง: url ต้องไม่มี NA และห้ามซ้ำ เพราะโค้ดด้านล่างใช้ left_join บน url เป็น key
+# ถ้ามี NA/ซ้ำหลุดเข้ามา join จะ explode (NA join กับ NA ทุกตัว, ซ้ำ join กับซ้ำ) จน error
+# "more rows than dplyr can handle" (เจอจริงมาแล้ว url=NA สะสม 3.26 ล้านแถวจนพัง 2026-09)
+n_before <- nrow(url_df)
+url_df <- url_df |> filter(!is.na(url)) |> distinct(url, .keep_all = TRUE)
+if (nrow(url_df) != n_before) {
+  message("[WARN] baseline มี url NA/ซ้ำ ", n_before - nrow(url_df), " แถว -> dedupe แล้ว")
+}
+
 # normalize updated_date format เพื่อ match กับ list page ใหม่
 url_df <- url_df |> mutate(updated_date = normalize_date(updated_date))
 baseline_detail <- url_df |> select(url, updated_date)
@@ -370,6 +379,7 @@ if (RESUME_ONLY) {
 
   changelog_all <- d$changelog
   to_scrape_all <- unique(c(d$new_urls, d$updated_urls, retry_failed))
+  to_scrape_all <- to_scrape_all[!is.na(to_scrape_all)]  # กัน NA หลุดเข้า scrape_one() แล้วไหลกลับเข้า baseline
 
   # ตัด removed ออกจาก baseline เฉพาะที่ "ยืนยันแล้ว" (หายติดกันครบ flicker_threshold รอบ)
   # flicker_urls ยังคงอยู่ใน baseline เหมือนเดิม แค่ missed_count ถูก patch เพิ่มด้านล่าง
