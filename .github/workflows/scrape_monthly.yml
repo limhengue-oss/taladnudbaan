@@ -6,7 +6,8 @@ name: scrape-monthly
 # สะสม จึงเลิกใช้) -> full scrape ไม่พึ่ง baseline/changelog เดิมเลย รีเซ็ตสะอาดทุกเดือน
 on:
   schedule:
-    - cron: '0 18 1 * *'   # วันที่ 1 ของทุกเดือน 18:00 UTC = 01:00 ICT
+    - cron: '0 1 1 * *'          # 01:00 ของวันที่ 1 ทุกเดือน ตามเวลาไทย
+      timezone: 'Asia/Bangkok'
   workflow_dispatch:
 
 concurrency:
