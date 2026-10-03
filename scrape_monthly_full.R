@@ -52,6 +52,9 @@ CONFIG <- list(
 )
 
 TIME_LIMIT_MIN <- as.numeric(Sys.getenv("TIME_LIMIT_MIN", "Inf"))
+PHASE          <- tolower(Sys.getenv("PHASE", "all"))     # all (default) | list (ไล่ list แล้วเซฟ) | detail (อ่าน list มา scrape detail)
+LIST_RDATA     <- "taladnudbaan_full_list.RData"
+if (!PHASE %in% c("all", "list", "detail")) stop("PHASE ต้องเป็น all | list | detail")
 REBUILD_MAIN   <- toupper(Sys.getenv("REBUILD_MAIN", "false")) == "TRUE"
 
 WORKERS <- as.integer(Sys.getenv("WORKERS", "10"))  # จำนวน request ทำพร้อมกัน -> เร่งความเร็วรวมได้ ~WORKERS เท่า
@@ -360,9 +363,21 @@ if (file.exists(CONFIG$pending_rdata)) {
   message(sprintf("  เหลือ %d / เดิม %d (ทำไปแล้ว %d)",
                   length(full_urls), length(full_urls) + length(full_accum),
                   length(full_accum)))
+} else if (PHASE == "detail") {
+  # แยก job: job list เซฟรายชื่อไว้ที่ LIST_RDATA แล้ว -> job นี้อ่านมา scrape detail เลย ไม่ไล่ list ใหม่
+  if (!file.exists(LIST_RDATA)) stop("PHASE=detail แต่ไม่พบ ", LIST_RDATA, " (ต้องรัน PHASE=list ก่อน)")
+  load(LIST_RDATA)   # -> full_list_df
+  message("=== PHASE=detail: อ่าน list จาก ", LIST_RDATA, " (", nrow(full_list_df), " url) ===")
+  full_urls  <- full_list_df$url
+  full_accum <- list()
 } else {
   full_list_df <- scrape_all_list()   # tibble(url, updated_date, page) -> เก็บไว้ rebuild baseline ตอนจบ
   message("=== ทั้งหมด ", nrow(full_list_df), " url (จะ scrape detail ใหม่หมดทุกตัว) ===")
+  if (PHASE == "list") {
+    save(full_list_df, file = LIST_RDATA)
+    message("=== PHASE=list: เซฟ list -> ", LIST_RDATA, " แล้วจบ (ยังไม่ scrape detail) ===")
+    quit(save = "no", status = 0)
+  }
   full_urls  <- full_list_df$url
   full_accum <- list()
 }

@@ -5,19 +5,19 @@ name: scrape-monthly
 # จาก changelog รายเดือน (scrape_monthly.R เดิม - เจอบั๊ก orphaned-month + removed ค้าง
 # สะสม จึงเลิกใช้) -> full scrape ไม่พึ่ง baseline/changelog เดิมเลย รีเซ็ตสะอาดทุกเดือน
 #
-# งานรวม (list ~2 ชม. + detail ~4 ชม.) เกินเพดาน 6 ชม./job ของ GitHub จึงทำต่อข้าม job ได้:
-#   - แต่ละ attempt หยุดเองที่ TIME_LIMIT_MIN=330 นาที แล้วเซฟ pending ขึ้น Drive
-#   - attempt ถัดไป (ทำทีละ attempt, max-parallel 1) ดึง pending จาก Drive มาทำต่อ
-#   - เขียนทับ properties.csv + baseline "เฉพาะตอนครบทุกรายการ" ระหว่างทางของเดิมบน Drive ไม่ถูกแตะ
-#   - attempt 1 เริ่มใหม่เสมอ (ลบ pending ค้าง) ยกเว้น dispatch ด้วย resume=true
+# แยก 2 job (เพราะรวมกัน list ~2 ชม. + detail ~4 ชม. เกินเพดาน 6 ชม./job ของ GitHub):
+#   job list   : ไล่ list (แบ่งอำเภอ/ประเภท/ราคา + ตรวจครบกับยอดเว็บ) -> เซฟ taladnudbaan_full_list.RData ขึ้น Drive
+#   job detail : อ่าน list จาก Drive -> scrape detail (หยุดเองที่ 335 นาที เซฟ pending ขึ้น Drive)
+#                -> ครบทุกรายการ จึงเขียนทับ properties.csv + baseline ระหว่างทางของเดิมบน Drive ไม่ถูกแตะ
+# ถ้า detail ไม่ทันใน 1 job: สั่ง dispatch ใหม่ติ๊ก resume_detail (ข้าม job list, ทำต่อจาก pending บน Drive)
 on:
   schedule:
     - cron: '0 1 1 * *'          # 01:00 ของวันที่ 1 ทุกเดือน ตามเวลาไทย
       timezone: 'Asia/Bangkok'
   workflow_dispatch:
     inputs:
-      resume:
-        description: 'ทำต่อจาก pending บน Drive (ไม่เริ่มใหม่)'
+      resume_detail:
+        description: 'ข้าม job list แล้วทำ detail ต่อจาก list + pending ที่เซฟไว้บน Drive'
         type: boolean
         default: false
 
@@ -26,81 +26,123 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  monthly:
+  list:
+    if: github.event.inputs.resume_detail != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 350
-    strategy:
-      max-parallel: 1          # ทีละ attempt ตามลำดับ
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3]
+    timeout-minutes: 240      # list วัดได้ ~2 ชม. 8 นาที (10 workers)
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup rclone
-        uses: AnimMouse/setup-rclone@v1
-        with:
-          rclone_config: ${{ secrets.RCLONE_CONFIG }}
-
-      - name: Decide whether to run this attempt
-        id: chk
-        run: |
-          PENDING=gdrive:taladnudbaan/taladnudbaan_full_pending.RData
-          HAS=$(rclone lsf "$PENDING" 2>/dev/null | wc -l)
-          if [ "${{ matrix.attempt }}" = "1" ]; then
-            if [ "${{ github.event.inputs.resume }}" != "true" ]; then
-              rclone deletefile "$PENDING" 2>/dev/null || true
-            fi
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          elif [ "$HAS" -gt 0 ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "attempt ${{ matrix.attempt }}: no pending on Drive -> previous attempt finished, skip"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup R
-        if: steps.chk.outputs.run == 'true'
         uses: r-lib/actions/setup-r@v2
         with:
           use-public-rspm: true
 
       - name: Install system deps
-        if: steps.chk.outputs.run == 'true'
         run: |
           sudo apt-get update -q
           sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
 
       - name: Install R packages
-        if: steps.chk.outputs.run == 'true'
         run: |
           Rscript -e 'install.packages(c(
             "rvest", "dplyr", "stringr", "purrr",
             "readr", "httr", "jsonlite", "future", "furrr", "blastula"
           ))'
 
-      - name: Download current properties.csv (สำหรับ backup ก่อนเขียนทับ) + pending
-        if: steps.chk.outputs.run == 'true'
-        run: |
-          rclone copy gdrive:taladnudbaan/taladnudbaan_properties.csv . || true
-          rclone copy gdrive:taladnudbaan/taladnudbaan_full_pending.RData . || true
-          ls -la taladnudbaan_full_pending.RData 2>/dev/null || echo "no pending -> start fresh (list scrape)"
+      - name: Setup rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: ${{ secrets.RCLONE_CONFIG }}
 
-      - name: Run full re-scrape + rebuild properties.csv + baseline
-        id: scrape
-        if: steps.chk.outputs.run == 'true'
+      - name: Clear stale list/pending from a previous run (fresh start)
+        run: |
+          rclone deletefile gdrive:taladnudbaan/taladnudbaan_full_list.RData 2>/dev/null || true
+          rclone deletefile gdrive:taladnudbaan/taladnudbaan_full_pending.RData 2>/dev/null || true
+
+      - name: Scrape list (city/type/price slices, verified against site total)
         env:
-          WORKERS: '25'            # detail scrape
-          LIST_WORKERS: '10'       # list scrape (แบ่งอำเภอ/ประเภท/ราคา)
-          TIME_LIMIT_MIN: '330'    # หยุดเองก่อนชนเพดาน 350 นาที แล้วเซฟ pending
+          PHASE: 'list'
+          LIST_WORKERS: '10'
+          WORKERS: '25'
+        run: Rscript scrape_monthly_full.R
+
+      - name: Upload list to Google Drive
+        run: rclone copy taladnudbaan_full_list.RData gdrive:taladnudbaan/
+
+      - name: Notify email (list failed)
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          STAGE: 'list'
+          MSG: 'failed (list coverage too low or error) - properties.csv was not touched'
+        run: |
+          Rscript -e '
+          library(blastula)
+          user <- Sys.getenv("GMAIL_USER"); pass <- Sys.getenv("GMAIL_APP_PASSWORD")
+          if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
+          smtp_send(
+            compose_email(body = md(paste0("taladnudbaan monthly [", Sys.getenv("STAGE"), "]: **", Sys.getenv("MSG"), "**\n\nวันที่: ", Sys.Date()))),
+            to = c(user, "wasinr@bot.or.th"), from = user,
+            subject = paste0("[taladnudbaan] monthly ", Sys.getenv("STAGE"), " FAILED ", format(Sys.Date(), "%Y%m%d")),
+            credentials = creds_envvar(user = user, pass_envvar = "GMAIL_APP_PASSWORD",
+                                       host = "smtp.gmail.com", port = 465, use_ssl = TRUE))'
+
+  detail:
+    needs: list
+    if: always() && (needs.list.result == 'success' || needs.list.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
+
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c(
+            "rvest", "dplyr", "stringr", "purrr",
+            "readr", "httr", "jsonlite", "future", "furrr", "blastula"
+          ))'
+
+      - name: Setup rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: ${{ secrets.RCLONE_CONFIG }}
+
+      - name: Download list + pending + current properties.csv (backup ก่อนเขียนทับ)
+        run: |
+          rclone copy gdrive:taladnudbaan/taladnudbaan_full_list.RData .    # ต้องมี ถ้าไม่มี job จะ fail
+          rclone copy gdrive:taladnudbaan/taladnudbaan_full_pending.RData . || true
+          rclone copy gdrive:taladnudbaan/taladnudbaan_properties.csv . || true
+          ls -la taladnudbaan_full_list.RData
+          ls -la taladnudbaan_full_pending.RData 2>/dev/null || echo "no pending -> start detail from the beginning"
+
+      - name: Scrape detail + rebuild properties.csv + baseline
+        id: scrape
+        env:
+          PHASE: 'detail'
+          WORKERS: '25'
+          TIME_LIMIT_MIN: '335'    # หยุดเองก่อนชนเพดาน 350 นาที แล้วเซฟ pending
           REBUILD_MAIN: 'true'
         run: Rscript scrape_monthly_full.R
 
       - name: Check finished
         id: fin
-        if: always() && steps.chk.outputs.run == 'true'
+        if: always()
         run: |
           if [ -f output_files_full.txt ] && [ "${{ steps.scrape.outcome }}" = "success" ]; then
             echo "finished=true" >> "$GITHUB_OUTPUT"
@@ -109,7 +151,7 @@ jobs:
           fi
 
       - name: Upload results (finished) or pending (unfinished) to Google Drive
-        if: always() && steps.chk.outputs.run == 'true'
+        if: always()
         run: |
           if [ "${{ steps.fin.outputs.finished }}" = "true" ]; then
             while IFS= read -r f; do
@@ -117,29 +159,38 @@ jobs:
             done < output_files_full.txt
             rclone copy taladnudbaan_properties_backup_*.csv gdrive:taladnudbaan/ || true
             rclone deletefile gdrive:taladnudbaan/taladnudbaan_full_pending.RData || true
+            rclone deletefile gdrive:taladnudbaan/taladnudbaan_full_list.RData || true
           elif [ -f taladnudbaan_full_pending.RData ]; then
             rclone copy taladnudbaan_full_pending.RData gdrive:taladnudbaan/
-            echo "unfinished -> pending uploaded for next attempt"
+            echo "unfinished -> pending uploaded; re-dispatch with resume_detail=true to continue"
           fi
 
-      - name: Notify email (only when finished or failed)
-        if: always() && steps.chk.outputs.run == 'true' && (steps.scrape.outcome != 'success' || steps.fin.outputs.finished == 'true')
+      - name: Fail loudly if detail did not finish
+        if: always() && steps.scrape.outcome == 'success' && steps.fin.outputs.finished != 'true'
+        run: |
+          echo "detail did not finish within the time limit; pending saved on Drive"
+          exit 1
+
+      - name: Notify email
+        if: always()
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          JOB_STATUS: ${{ steps.scrape.outcome }}
-          ATTEMPT: ${{ matrix.attempt }}
+          JOB_STATUS: ${{ job.status }}
+          FINISHED: ${{ steps.fin.outputs.finished }}
         run: |
           Rscript -e '
           library(blastula)
-          user    <- Sys.getenv("GMAIL_USER")
-          pass    <- Sys.getenv("GMAIL_APP_PASSWORD")
-          status  <- Sys.getenv("JOB_STATUS")
-          attempt <- Sys.getenv("ATTEMPT")
+          user   <- Sys.getenv("GMAIL_USER")
+          pass   <- Sys.getenv("GMAIL_APP_PASSWORD")
+          status <- Sys.getenv("JOB_STATUS")
+          fin    <- Sys.getenv("FINISHED")
           if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
+          note <- if (fin == "true") "ครบทุกรายการ เขียนทับ properties.csv + baseline แล้ว" else
+                  "ยังไม่ครบ/ล้มเหลว: properties.csv เดิมไม่ถูกแตะ (ถ้า scrape ไม่จบ ให้ dispatch ใหม่ติ๊ก resume_detail)"
           smtp_send(
             compose_email(body = md(paste0(
-              "taladnudbaan monthly full re-scrape + baseline rebuild: **", status, "** (attempt ", attempt, ")\n\n",
+              "taladnudbaan monthly full re-scrape + baseline rebuild: **", status, "**\n\n", note, "\n\n",
               "วันที่: ", Sys.Date()
             ))),
             to          = c(user, "wasinr@bot.or.th"),
