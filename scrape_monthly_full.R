@@ -25,6 +25,7 @@
 
 CONFIG <- list(
   base_url    = "https://www.taladnudbaan.com/properties?sellers_only_out=on&order=price%20desc&view=list&page_length=60&",
+  list_base_url = "https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list",   # ไม่ส่ง order -> ลำดับ default
   sleep_sec   = 0.1,
   max_retries = 4L,
   backoff_sec = 20,
@@ -120,24 +121,140 @@ parse_list_page <- function(list_page) {
   bind_rows(rows) |> distinct(url, .keep_all = TRUE)
 }
 
-scrape_all_list <- function() {
-  message("=== SCRAPE LIST (full) ===")
+# ---- LIST แบบแบ่งส่วน (city -> type -> price) + ตรวจครบกับยอดที่เว็บบอก ------------
+# ทำไมไม่ไล่ page=1..N ตรงๆ: เว็บแบ่งหน้าแบบ offset และเรียงตามราคา (ราคาเท่ากันลำดับไม่คงที่
+# ข้ามหน้า) -> บางรายการซ้ำที่รอยต่อหน้า บางรายการไม่เคยโผล่ (รอบ 1 ต.ค. ได้ 134,608 จาก 170,847)
+# หลักการ: ทุก filter เว็บบอกจำนวนรวม "ผลการค้นหา : N" -> ส่วนที่ N<=60 อยู่หน้าเดียวครบแน่ (ไม่ผ่านรอยต่อ)
+# ส่วนที่เกิน 60 แบ่งต่อ ถ้าแบ่งไม่ได้ก็ไล่หลายหน้า + ตัวกรองเสริม แล้วเทียบ unique กับ N ทุกส่วน
+# ไม่ส่ง order -> ใช้ลำดับ default ของเว็บ (ทดสอบแล้วซ้ำน้อยกว่าเรียงตามราคา)
+LIST_WORKERS      <- as.integer(Sys.getenv("LIST_WORKERS", "10"))
+LIST_MIN_COVERAGE <- as.numeric(Sys.getenv("LIST_MIN_COVERAGE", "0.98"))   # ต่ำกว่านี้ = หยุด ไม่เขียนทับของจริง
+
+LIST_LEVELS <- list(
+  paste0("&type_id=", 1:9),
+  c("&min=0&max=500000", "&min=500000&max=1000000", "&min=1000000&max=2000000",
+    "&min=2000000&max=3000000", "&min=3000000&max=4000000", "&min=4000000&max=5000000",
+    "&min=5000000&max=5000001", "&min=5000001")
+)
+# ตัวกรองเสริม: ไม่ได้แบ่งครบทุกรายการ (เช่น ที่ดินไม่มีห้องนอน) ใช้เป็นตัวครอบคลุมเพิ่มแล้ว union เท่านั้น
+LIST_COVERS <- c(
+  paste0("&bedrooms=", c("studio", "1", "2", "3", "4")),
+  paste0("&bathrooms=", 1:4),
+  paste0("&total_surface=",  c("1-50", "51-100", "101-200", "201-400", "401-1000")),
+  paste0("&living_surface=", c("1-50", "51-100", "101-200", "201-400", "401-1000"))
+)
+
+list_url <- function(e, page_length = 60L, page = 1L)
+  paste0(CONFIG$list_base_url, e, "&page_length=", page_length, "&page=", page)
+
+parse_list_total <- function(list_page) {
+  m <- str_match(html_text2(list_page), "ผลการค้นหา\\s*:\\s*([0-9,]+)")[, 2]
+  if (is.na(m)) 0L else as.integer(str_remove_all(m, ","))
+}
+
+list_fetch <- function(e, page_length = 60L, page = 1L) {
+  pg <- fetch_html(list_url(e, page_length, page))
+  list(n = parse_list_total(pg), df = parse_list_page(pg))
+}
+
+union_urls <- function(a, b) bind_rows(a, b) |> distinct(url, .keep_all = TRUE)
+
+list_paginated <- function(e, page_length) {
   acc <- list(); p <- 1L
   repeat {
-    t0 <- Sys.time()
-    df <- parse_list_page(fetch_html(build_list_url(p)))
-    elapsed <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 2)
-    if (nrow(df) == 0) { message("  หน้า ", p, " ว่าง -> จบ"); break }
-    df$page <- p
+    df <- list_fetch(e, page_length, p)$df
+    if (nrow(df) == 0L) break
     acc[[p]] <- df
-    message(sprintf("  หน้า %d -> %d url (%.2fs)", p, nrow(df), elapsed))
     p <- p + 1L
-    if (p > CONFIG$max_pages) {
-      message("  [WARN] ชน max_pages=", CONFIG$max_pages, " -> อาจตัดข้อมูลทิ้ง ตรวจสอบด้วย")
-      break
-    }
+    if (p > 400L) break   # กันลูปไม่จบ (ส่วนที่แบ่งแล้วไม่เกินไม่กี่พันรายการ)
   }
   bind_rows(acc) |> distinct(url, .keep_all = TRUE)
+}
+
+list_rescue <- function(e, have, n) {
+  for (pl in c(60L, 40L, 20L)) {
+    have <- union_urls(have, list_paginated(e, pl))
+    if (nrow(have) >= n) return(have)
+  }
+  for (cv in LIST_COVERS) {
+    r <- list_fetch(paste0(e, cv))
+    if (r$n == 0L) next
+    add <- if (r$n <= 60L) r$df else list_paginated(paste0(e, cv), 60L)
+    have <- union_urls(have, add)
+    if (nrow(have) >= n) return(have)
+  }
+  have
+}
+
+# คืน list(df = url ที่ได้, short = ส่วนที่ unique < N หลังลองทุกวิธีแล้ว)
+list_solve <- function(e, lvl = 1L) {
+  r <- list_fetch(e)
+  n <- r$n
+  if (n == 0L) return(list(df = tibble(url = character(0), updated_date = character(0)), short = NULL))
+
+  short <- NULL
+  if (n <= 60L) {
+    got <- r$df
+  } else if (lvl <= length(LIST_LEVELS)) {
+    parts <- lapply(LIST_LEVELS[[lvl]], function(s) list_solve(paste0(e, s), lvl + 1L))
+    got   <- bind_rows(lapply(parts, `[[`, "df")) |> distinct(url, .keep_all = TRUE)
+    short <- do.call(c, lapply(parts, `[[`, "short"))
+  } else {
+    got <- list_paginated(e, 60L)
+  }
+  if (nrow(got) < n) got <- list_rescue(e, got, n)
+  if (nrow(got) < n) short <- c(short, list(tibble(node = e, n = n, got = nrow(got))))
+  list(df = got, short = short)
+}
+
+list_city <- function(cid) {
+  e <- paste0("&city_id=", cid)
+  tryCatch(c(list_solve(e), list(failed = FALSE)),
+           error = function(err) {
+             message("  [list ERROR] ", e, ": ", conditionMessage(err))
+             list(df = tibble(url = character(0), updated_date = character(0)),
+                  short = NULL, failed = TRUE, cid = cid)
+           })
+}
+
+scrape_all_list <- function() {
+  message("=== SCRAPE LIST (แบ่งอำเภอ/ประเภท/ราคา, workers=", LIST_WORKERS, ") ===")
+  plan(multisession, workers = LIST_WORKERS)
+  on.exit(plan(multisession, workers = WORKERS), add = TRUE)
+  opt <- furrr_options(seed = TRUE, scheduling = Inf)   # 1 อำเภอ/future แบบ dynamic: อำเภอใหญ่ไม่ทำให้คิวค้าง
+
+  total0 <- list_fetch("")$n
+  message("  เว็บบอกรวม ", total0, " รายการ")
+
+  probe_one <- function(i) tryCatch(list_fetch(paste0("&city_id=", i))$n, error = function(e) NA_integer_)
+  probe <- future_map_int(1:1400, probe_one, .options = opt)
+  for (k in which(is.na(probe))) probe[k] <- probe_one(k)           # retry probe ที่ error
+  ids <- which(!is.na(probe) & probe > 0L)
+  ids <- ids[order(-probe[ids])]                                    # อำเภอใหญ่ก่อน
+  message("  อำเภอที่มีทรัพย์ ", length(ids), " แห่ง (รวมตาม filter ", sum(probe[ids]), ")")
+
+  res <- future_map(ids, list_city, .options = opt)
+  failed <- ids[vapply(res, function(x) isTRUE(x$failed), logical(1))]
+  if (length(failed) > 0) {
+    message("  retry อำเภอที่ error ", length(failed), " แห่ง")
+    res[match(failed, ids)] <- future_map(failed, list_city, .options = opt)
+  }
+
+  df    <- bind_rows(lapply(res, `[[`, "df")) |> distinct(url, .keep_all = TRUE)
+  short <- bind_rows(lapply(res, `[[`, "short"))
+  total1 <- list_fetch("")$n
+  total  <- max(total0, total1)
+  cov    <- nrow(df) / total
+
+  message(sprintf("  ได้ unique %d / เว็บบอก %d (ต้น) %d (ปลาย) = %.2f%%", nrow(df), total0, total1, 100 * cov))
+  if (nrow(short) > 0) {
+    message("  ส่วนที่ยังไม่ครบหลังลองทุกวิธี: ", nrow(short), " ส่วน ขาดรวม ", sum(short$n - short$got), " (บางส่วนซ้อนกัน)")
+    print(head(short[order(-(short$n - short$got)), ], 20))
+  }
+  if (cov < LIST_MIN_COVERAGE)
+    stop(sprintf("list ครอบคลุมแค่ %.2f%% < %.0f%% -> หยุด ไม่เขียนทับข้อมูลจริง", 100 * cov, 100 * LIST_MIN_COVERAGE))
+
+  df |> mutate(page = NA_integer_) |> select(url, updated_date, page)
 }
 
 # ---- DETAIL (เหมือน scrape_daily.R) -------------------------------------------
