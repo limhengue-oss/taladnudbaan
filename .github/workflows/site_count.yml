@@ -3,9 +3,10 @@ name: site-count
 # บันทึกจำนวนทรัพย์ที่เว็บ taladnudbaan.com รายงานเอง ("ผลการค้นหา : N รายการทรัพย์") วันละครั้ง
 # ไฟล์บน Google Drive (gdrive:taladnudbaan/):
 #   site_count_log.csv        : date_ict, timestamp_utc, site_total              (ยอดรวม 1 แถว/วัน)
-#   site_count_breakdown.csv  : date_ict, level, province_id, province_name, type_id, type_slug, total
-#       level = type (9 ประเภท) | province (ราย จังหวัด) | province_type (จังหวัด x ประเภท)
-# ราว 800 request/วัน (4 thread) ใช้เวลาไม่กี่นาที ไม่ผูกกับ scrape-daily ที่ไล่ list เอง
+#   site_count_breakdown.csv  : date_ict, level, province_id, province_name, type_id, type_slug, sale_method, total
+#       level = overall | type (9 ประเภท) | province (ราย จังหวัด) | province_type (จังหวัด x ประเภท)
+#       sale_method = all | sale (รายการขาย) | auction (รายการประมูล)  (แถว all = sale + auction)
+# ราว 1,700 request/วัน (4 thread) ใช้เวลา ~7 นาที ไม่ผูกกับ scrape-daily ที่ไล่ list เอง
 on:
   schedule:
     - cron: '5 0 * * *'          # 00:05 เวลาไทยทุกวัน
@@ -19,93 +20,16 @@ concurrency:
 jobs:
   count:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Setup rclone
         uses: AnimMouse/setup-rclone@v1
         with:
           rclone_config: ${{ secrets.RCLONE_CONFIG }}
 
-      - name: Read site totals (overall, by type, by province, province x type) and append to logs on Drive
-        run: |
-          python3 - <<'EOF'
-          import re, sys, time, subprocess, collections, datetime, zoneinfo, urllib.request
-          from concurrent.futures import ThreadPoolExecutor
-
-          BASE = "https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=20&page=1"
-          UA = {"User-Agent": "Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)"}
-          TYPES = list(range(1, 10))
-          PROVINCE_IDS = list(range(1, 121))   # id ที่ไม่มีทรัพย์ (total=0) จะถูกข้าม
-
-          def info(extra):
-              """คืน (total, type_slug ที่พบมากสุด, province_name ที่พบมากสุด) หรือ None ถ้า request พัง"""
-              for attempt in range(3):
-                  try:
-                      req = urllib.request.Request(BASE + extra, headers=UA)
-                      html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "ignore")
-                      text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
-                      m = re.search(r"ผลการค้นหา\s*:\s*([\d,]+)", text)
-                      total = int(m.group(1).replace(",", "")) if m else 0
-                      slugs = collections.Counter(re.findall(r'href="[^"]*?/property/([^/"]+)/[^/"]+/[^/"]+"', html))
-                      provs = collections.Counter(re.findall(r"\s,\s*([^\s,][^,]*?)\s+[\d,]{4,}\s*บาท", text))
-                      time.sleep(0.2)
-                      return (total,
-                              slugs.most_common(1)[0][0] if slugs else "",
-                              provs.most_common(1)[0][0] if provs else "")
-                  except Exception:
-                      time.sleep(5 * (attempt + 1))
-              return None
-
-          now = datetime.datetime.now(datetime.timezone.utc)
-          ict = now.astimezone(zoneinfo.ZoneInfo("Asia/Bangkok")).date().isoformat()
-
-          overall = info("")
-          if overall is None or overall[0] == 0:
-              sys.exit("cannot read the overall site total (layout changed or blocked?)")
-
-          rows, failed = [], 0
-          with ThreadPoolExecutor(4) as ex:
-              by_type = list(ex.map(lambda t: info(f"&type_id={t}"), TYPES))
-              by_prov = list(ex.map(lambda p: info(f"&province_id={p}"), PROVINCE_IDS))
-              for t, r in zip(TYPES, by_type):
-                  if r is None: failed += 1; rows.append((ict, "type", "", "", t, "", "")); continue
-                  rows.append((ict, "type", "", "", t, r[1], r[0]))
-              live = []
-              for p, r in zip(PROVINCE_IDS, by_prov):
-                  if r is None: failed += 1; rows.append((ict, "province", p, "", "", "", "")); continue
-                  if r[0] > 0:
-                      rows.append((ict, "province", p, r[2], "", "", r[0])); live.append((p, r[2]))
-              combos = [(p, pn, t) for p, pn in live for t in TYPES]
-              res = list(ex.map(lambda c: info(f"&province_id={c[0]}&type_id={c[2]}"), combos))
-              for (p, pn, t), r in zip(combos, res):
-                  if r is None: failed += 1; rows.append((ict, "province_type", p, pn, t, "", "")); continue
-                  if r[0] > 0:
-                      rows.append((ict, "province_type", p, pn, t, r[1], r[0]))
-
-          print(f"overall={overall[0]} rows={len(rows)} failed_requests={failed}")
-          if failed > 20:
-              sys.exit(f"too many failed requests ({failed}) - not writing logs")
-
-          def append(remote, local, header, new_lines):
-              subprocess.run(["rclone", "copyto", remote, local], check=False)   # ไม่มีไฟล์ = เริ่มใหม่
-              try:
-                  txt = open(local, encoding="utf-8").read()
-              except FileNotFoundError:
-                  txt = ""
-              if not txt.strip():
-                  txt = header + "\n"
-              if not txt.endswith("\n"):
-                  txt += "\n"
-              open(local, "w", encoding="utf-8").write(txt + "\n".join(new_lines) + "\n")
-              subprocess.run(["rclone", "copyto", local, remote], check=True)
-
-          append("gdrive:taladnudbaan/site_count_log.csv", "site_count_log.csv",
-                 "date_ict,timestamp_utc,site_total",
-                 [f"{ict},{now.strftime('%Y-%m-%dT%H:%M:%SZ')},{overall[0]}"])
-          q = lambda v: '"' + str(v).replace('"', '""') + '"' if "," in str(v) else str(v)
-          append("gdrive:taladnudbaan/site_count_breakdown.csv", "site_count_breakdown.csv",
-                 "date_ict,level,province_id,province_name,type_id,type_slug,total",
-                 [",".join(q(c) for c in r) for r in rows])
-          print("done")
-          EOF
+      - name: Read site totals and append to logs on Drive
+        run: python3 site_count.py
