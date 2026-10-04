@@ -12,6 +12,8 @@
 # ไม่ส่ง order -> ใช้ลำดับ default ของเว็บ (ทดสอบแล้วซ้ำน้อยกว่าเรียงตามราคา)
 LIST_WORKERS      <- as.integer(Sys.getenv("LIST_WORKERS", "10"))
 LIST_MIN_COVERAGE <- as.numeric(Sys.getenv("LIST_MIN_COVERAGE", "0.98"))   # ต่ำกว่านี้ = หยุด ไม่เขียนทับของจริง
+SWEEP_MIN_ITEMS   <- as.integer(Sys.getenv("SWEEP_MIN_ITEMS", "3"))        # รอบเก็บตกรายจังหวัด: เหลืออย่างน้อยกี่รายการ
+SWEEP_MIN_PCT     <- as.numeric(Sys.getenv("SWEEP_MIN_PCT", "0.5"))        # ...และอย่างน้อยกี่ % ของรายการทั้งจังหวัด
 
 LIST_LEVELS <- list(
   paste0("&type_id=", 1:9),
@@ -142,6 +144,13 @@ scrape_all_list <- function() {
   ids <- ids[order(-cn[ids])]                                       # อำเภอใหญ่ก่อน
   message("  อำเภอที่มีทรัพย์ ", length(ids), " แห่ง (รวมตาม filter ", sum(cn[ids]), ")")
 
+  # ถามยอดรายจังหวัด "ตอนนี้" (ช่วงเดียวกับยอดอำเภอ) เพื่อให้เทียบกันได้ที่เวลาเดียวกัน
+  # ถ้าถามหลังไล่อำเภอเสร็จ (~1 ชม.) ยอดที่ขยับตามเวลาจะทำให้เกือบทุกจังหวัดดูเหมือนมีรายการเหลือ
+  pids   <- 1:150
+  pprobe <- future_map(paste0("&province_id=", pids), probe_one, .options = opt)
+  for (k in which(vapply(pprobe, is.null, logical(1)))) pprobe[[k]] <- probe_one(paste0("&province_id=", k))
+  pn <- probe_n(pprobe); pname <- probe_p(pprobe)
+
   res <- future_map(ids, list_city, .options = opt)
   failed <- ids[vapply(res, function(x) isTRUE(x$failed), logical(1))]
   if (length(failed) > 0) {
@@ -151,19 +160,20 @@ scrape_all_list <- function() {
 
   # รอบเก็บตก: ทรัพย์ที่ไม่ผูกกับอำเภอใดเลย (หรืออำเภอที่ยังขาด) filter อำเภอจับไม่ได้
   # -> เทียบ N ราย จังหวัด กับผลรวม N ของอำเภอในจังหวัดนั้น จังหวัดไหนเหลือ -> แบ่ง/ไล่ทั้งจังหวัดแล้ว union
-  pids   <- 1:150
-  pprobe <- future_map(paste0("&province_id=", pids), probe_one, .options = opt)
-  for (k in which(vapply(pprobe, is.null, logical(1)))) pprobe[[k]] <- probe_one(paste0("&province_id=", k))
-  pn <- probe_n(pprobe); pname <- probe_p(pprobe)
   live <- which(!is.na(pn) & pn > 0L)
   covered <- vapply(live, function(i) {
     if (is.na(pname[i])) return(0L)
     sum(cn[ids][!is.na(cprov[ids]) & cprov[ids] == pname[i]])
   }, numeric(1))
   resid <- pn[live] - covered
-  sweep_p <- pids[live][resid > 0]
-  message("  รอบเก็บตก: จังหวัดที่ผลรวมอำเภอยังน้อยกว่ายอดจังหวัด ", length(sweep_p), " แห่ง ขาดรวม ", sum(resid[resid > 0]),
-          " (จังหวัด id: ", paste(head(sweep_p, 20), collapse = ","), ")")
+  # เกณฑ์ขั้นต่ำ: เก็บตกเฉพาะจังหวัดที่เหลือ >= SWEEP_MIN_ITEMS รายการ "และ" >= SWEEP_MIN_PCT % ของรายการทั้งจังหวัด
+  # (กันไล่ทั้งจังหวัดซ้ำเพราะยอดขยับเล็กน้อยระหว่างไล่ ส่วนที่ต่ำกว่าเกณฑ์ยอมรับว่าไม่เก็บ แต่รายงานไว้)
+  do_sweep <- resid >= SWEEP_MIN_ITEMS & resid >= SWEEP_MIN_PCT / 100 * pn[live]
+  sweep_p  <- pids[live][do_sweep]
+  message(sprintf("  รอบเก็บตก: จังหวัดที่ผลรวมอำเภอ < ยอดจังหวัด %d แห่ง (ขาดรวม %d) | เข้าเกณฑ์ไล่ซ้ำ %d แห่ง (ขาด %d) | ต่ำกว่าเกณฑ์ ไม่ไล่ %d (ขาด %d) [เกณฑ์: >=%d รายการ และ >=%.2f%%]",
+                  sum(resid > 0), sum(resid[resid > 0]), length(sweep_p), sum(resid[do_sweep]),
+                  sum(resid > 0 & !do_sweep), sum(resid[resid > 0 & !do_sweep]), SWEEP_MIN_ITEMS, SWEEP_MIN_PCT))
+  if (length(sweep_p) > 0) message("    จังหวัด id ที่ไล่ซ้ำ: ", paste(head(sweep_p, 30), collapse = ","))
   if (length(sweep_p) > 0) {
     pres <- future_map(sweep_p, function(pid) {
       e <- paste0("&province_id=", pid)

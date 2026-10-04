@@ -62,9 +62,17 @@ stamp <- format(Sys.time(), "%Y%m%d_%H%M")
 RESUME_ONLY <- toupper(Sys.getenv("RESUME_ONLY", "false")) == "TRUE"
 
 # ---- FETCH ------------------------------------------------------------------
+# กันแคช Cloudflare: จาก GitHub runner บางหน้าถูกส่งสำเนาแคชเก่า 1.5-3 วัน (cf-cache-status: HIT, age ~36-77 ชม.)
+# ทั้งที่เซิร์ฟเวอร์ส่ง Cache-Control: no-store -> ต่อท้ายพารามิเตอร์ cb ที่ไม่ซ้ำทุก request = URL ใหม่ = ได้ของสดเสมอ
+# (ทดสอบแล้ว: list/detail + cb ได้ MISS และยอดสด) ไม่ส่งผลต่อเนื้อหาของหน้า
+add_cache_buster <- function(url) {
+  sep <- if (grepl("?", url, fixed = TRUE)) "&" else "?"
+  paste0(url, sep, "cb=", format(as.numeric(Sys.time()) * 1000, scientific = FALSE, digits = 15), "-", sample.int(1e6, 1))
+}
+
 fetch_html <- function(url, attempt = 1L) {
   Sys.sleep(runif(1, CONFIG$sleep_sec, CONFIG$sleep_sec * 1.5))
-  resp <- httr::GET(url, httr::user_agent(CONFIG$user_agent))
+  resp <- httr::GET(add_cache_buster(url), httr::user_agent(CONFIG$user_agent))
   code <- httr::status_code(resp)
   if (code == 429 || code >= 500) {
     if (attempt > CONFIG$max_retries) httr::stop_for_status(resp)

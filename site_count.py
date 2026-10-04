@@ -16,6 +16,7 @@ Env: SITE_COUNT_DRY_RUN=1 skips rclone (reads/writes the CSVs in the working dir
 import collections
 import datetime
 import os
+import random
 import re
 import subprocess
 import sys
@@ -37,7 +38,8 @@ def info(extra):
     """Return (total, most common type slug, most common province name) or None if the request keeps failing."""
     for attempt in range(3):
         try:
-            req = urllib.request.Request(BASE + extra, headers=UA)
+            # &cb=<unique> bypasses Cloudflare's edge cache (GitHub runners were served pages 1.5-3 days old)
+            req = urllib.request.Request(f"{BASE}{extra}&cb={time.time_ns()}-{random.randint(0, 10**6)}", headers=UA)
             html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "ignore")
             text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
             m = re.search(r"ผลการค้นหา\s*:\s*([\d,]+)", text)
