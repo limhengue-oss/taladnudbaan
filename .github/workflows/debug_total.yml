@@ -1,6 +1,6 @@
 name: debug-total
 
-# TEMPORARY diagnostic (delete after use): compare the listing total seen by R/httr, python and curl from a GitHub runner
+# TEMPORARY diagnostic (delete after use): does Cloudflare serve stale cached pages to GitHub runners, and does a cache-buster fix it?
 on:
   workflow_dispatch:
 
@@ -9,42 +9,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: curl
+      - name: probe
         run: |
-          U='https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60&page=1'
-          curl -s -D /tmp/h.txt -A 'Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)' "$U" -o /tmp/c.html
-          grep -i -E '^(HTTP|date|cf-cache-status|age):' /tmp/h.txt
-          python3 -c "import re;t=re.sub(r'<[^>]+>',' ',open('/tmp/c.html',encoding='utf-8',errors='ignore').read());print('curl total:',re.search(r'ผลการค้นหา\s*:\s*([\d,]+)',t).group(1))"
-
-      - name: python urllib
-        run: |
-          python3 - <<'EOF'
-          import re, urllib.request
-          u = 'https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60&page=1'
-          r = urllib.request.urlopen(urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)'}), timeout=60)
-          t = re.sub(r'<[^>]+>', ' ', r.read().decode('utf-8', 'ignore'))
-          print('python total:', re.search(r'ผลการค้นหา\s*:\s*([\d,]+)', t).group(1), '| cf-cache:', r.headers.get('cf-cache-status'), '| age:', r.headers.get('age'), '| date:', r.headers.get('date'))
-          EOF
-
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          use-public-rspm: true
-
-      - name: R httr
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
-          Rscript -e 'install.packages(c("httr","rvest","stringr"))'
-          cat > /tmp/t.R <<'EOF'
-          suppressMessages({library(httr); library(rvest); library(stringr)})
-          ua <- "Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)"
-          u <- "https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60&page=1"
-          resp <- GET(u, user_agent(ua), verbose(FALSE))
-          txt <- html_text2(read_html(resp))
-          m <- str_match(txt, "ผลการค้นหา[[:space:]]*:[[:space:]]*([0-9,]+)")[, 2]
-          h <- headers(resp)
-          cat("R total:", m, "| cf-cache:", h[["cf-cache-status"]], "| age:", h[["age"]], "| date:", h[["date"]], "\n")
-          resp2 <- GET(u, user_agent(ua), add_headers(Accept = "*/*"))
-          txt2 <- html_text2(read_html(resp2))
-          cat("R total (Accept */*):", str_match(txt2, "ผลการค้นหา[[:space:]]*:[[:space:]]*([0-9,]+)")[, 2], "| cf-cache:", headers(resp2)[["cf-cache-status"]], "\n")
-          EOF
-          Rscript /tmp/t.R
+          python3 - <<'PY'
+          import re, time, urllib.request
+          UA = {'User-Agent': 'Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)'}
+          B = 'https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60'
+          D = 'https://www.taladnudbaan.com/property/single-house/LED/2094797'
+          def probe(label, url):
+              r = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60)
+              t = re.sub(r'<[^>]+>', ' ', r.read().decode('utf-8', 'ignore'))
+              m = re.search(r'ผลการค้นหา\s*:\s*([\d,]+)', t)
+              print(f'{label:34s} total={m.group(1) if m else "-":>8s} cf-cache={r.headers.get("cf-cache-status")} age={r.headers.get("age")}')
+          probe('list p1 (plain)', B + '&page=1')
+          probe('list p1 + cb', B + f'&page=1&cb={int(time.time())}')
+          probe('list p2 (plain)', B + '&page=2')
+          probe('list p2 + cb', B + f'&page=2&cb={int(time.time())}x')
+          probe('list p500 (plain)', B + '&page=500')
+          probe('list p500 + cb', B + f'&page=500&cb={int(time.time())}y')
+          probe('list city_id=3 (plain)', B + '&page=1&city_id=3')
+          probe('list city_id=3 + cb', B + f'&page=1&city_id=3&cb={int(time.time())}z')
+          probe('detail (plain)', D)
+          probe('detail + cb', D + f'?cb={int(time.time())}')
+          PY
