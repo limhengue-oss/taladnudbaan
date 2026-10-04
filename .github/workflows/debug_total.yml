@@ -1,0 +1,50 @@
+name: debug-total
+
+# TEMPORARY diagnostic (delete after use): compare the listing total seen by R/httr, python and curl from a GitHub runner
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: curl
+        run: |
+          U='https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60&page=1'
+          curl -s -D /tmp/h.txt -A 'Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)' "$U" -o /tmp/c.html
+          grep -i -E '^(HTTP|date|cf-cache-status|age):' /tmp/h.txt
+          python3 -c "import re;t=re.sub(r'<[^>]+>',' ',open('/tmp/c.html',encoding='utf-8',errors='ignore').read());print('curl total:',re.search(r'ผลการค้นหา\s*:\s*([\d,]+)',t).group(1))"
+
+      - name: python urllib
+        run: |
+          python3 - <<'EOF'
+          import re, urllib.request
+          u = 'https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60&page=1'
+          r = urllib.request.urlopen(urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)'}), timeout=60)
+          t = re.sub(r'<[^>]+>', ' ', r.read().decode('utf-8', 'ignore'))
+          print('python total:', re.search(r'ผลการค้นหา\s*:\s*([\d,]+)', t).group(1), '| cf-cache:', r.headers.get('cf-cache-status'), '| age:', r.headers.get('age'), '| date:', r.headers.get('date'))
+          EOF
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: R httr
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
+          Rscript -e 'install.packages(c("httr","rvest","stringr"))'
+          cat > /tmp/t.R <<'EOF'
+          suppressMessages({library(httr); library(rvest); library(stringr)})
+          ua <- "Mozilla/5.0 (research data collection; contact: limhengue@gmail.com)"
+          u <- "https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list&page_length=60&page=1"
+          resp <- GET(u, user_agent(ua), verbose(FALSE))
+          txt <- html_text2(read_html(resp))
+          m <- str_match(txt, "ผลการค้นหา[[:space:]]*:[[:space:]]*([0-9,]+)")[, 2]
+          h <- headers(resp)
+          cat("R total:", m, "| cf-cache:", h[["cf-cache-status"]], "| age:", h[["age"]], "| date:", h[["date"]], "\n")
+          resp2 <- GET(u, user_agent(ua), add_headers(Accept = "*/*"))
+          txt2 <- html_text2(read_html(resp2))
+          cat("R total (Accept */*):", str_match(txt2, "ผลการค้นหา[[:space:]]*:[[:space:]]*([0-9,]+)")[, 2], "| cf-cache:", headers(resp2)[["cf-cache-status"]], "\n")
+          EOF
+          Rscript /tmp/t.R
