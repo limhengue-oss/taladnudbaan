@@ -31,5 +31,15 @@ jobs:
         with:
           rclone_config: ${{ secrets.RCLONE_CONFIG }}
 
-      - name: Read site totals and append to logs on Drive
+      - name: Read site totals and write today's rows to the logs on Drive
         run: python3 site_count.py
+
+      - name: Email me if this job failed
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_SUBJECT: '[taladnudbaan] site-count FAILED'
+          NOTIFY_BODY: 'The daily site-count job failed (website layout changed, blocked, or Drive error). No rows were written today.'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 notify_failure.py
