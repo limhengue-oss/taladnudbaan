@@ -11,3 +11,5 @@ local/logs/
 output_files*.txt
 update_status.txt
 !taladnudbaan_urls.RData
+# บันทึก project (repo public → ไม่ขึ้น GitHub)
+.brain/
