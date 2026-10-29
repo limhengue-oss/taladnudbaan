@@ -89,7 +89,16 @@ add_cache_buster <- function(url) {
 
 fetch_html <- function(url, attempt = 1L) {
   Sys.sleep(runif(1, CONFIG$sleep_sec, CONFIG$sleep_sec * 1.5))
-  resp <- httr::GET(add_cache_buster(url), httr::user_agent(CONFIG$user_agent))
+  # network error (connection reset / timeout) ไม่มี status code -> ต้อง catch เองแล้ว retry เหมือน 429/5xx
+  resp <- tryCatch(httr::GET(add_cache_buster(url), httr::user_agent(CONFIG$user_agent)),
+                   error = function(e) e)
+  if (inherits(resp, "error")) {
+    if (attempt > CONFIG$max_retries) stop(resp)
+    wait <- CONFIG$backoff_sec * attempt
+    message("    network error (", conditionMessage(resp), ") รอ ", wait, "s (", attempt, ")")
+    Sys.sleep(wait)
+    return(fetch_html(url, attempt + 1L))
+  }
   code <- httr::status_code(resp)
   if (code == 429 || code >= 500) {
     if (attempt > CONFIG$max_retries) httr::stop_for_status(resp)
