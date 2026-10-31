@@ -461,24 +461,15 @@ done_dates <- flagged |> filter(url %in% done_urls) |> distinct(url, .keep_all =
   select(url, updated_date, list_page) |>
   left_join(scrape_ok_map, by = "url")
 
-if (RESUME_ONLY) {
-  # resume mode: patch เฉพาะรายการที่ scrape เข้า baseline เดิม ไม่แตะรายการอื่น
-  idx   <- match(done_dates$url, url_df$url)
-  valid <- !is.na(idx)
-  ok    <- valid & !is.na(done_dates$scrape_ok) & done_dates$scrape_ok
-  url_df$updated_date[idx[ok]]    <- done_dates$updated_date[ok]
-  url_df$detail_ok[idx[valid]]    <- done_dates$scrape_ok[valid]
-} else {
-  # full mode: มี new_list ครบทุกหน้าอยู่แล้ว -> rebuild url_df จาก flagged (ตัด removed ออกแล้ว)
-  new_entries <- done_dates |> filter(!url %in% url_df$url) |>
-    transmute(page = list_page, url, updated_date, detail_ok = scrape_ok, missed_count = 0L)
-  url_df <- bind_rows(url_df, new_entries)
-  idx   <- match(done_dates$url, url_df$url)
-  valid <- !is.na(idx)
-  ok    <- valid & !is.na(done_dates$scrape_ok) & done_dates$scrape_ok
-  url_df$updated_date[idx[ok]] <- done_dates$updated_date[ok]
-  url_df$detail_ok[idx[valid]] <- done_dates$scrape_ok[valid]
-}
+# ใช้ทั้งโหมดปกติและ resume: url ที่ scrape แล้วแต่ยังไม่มีใน baseline (รายการ new) -> เพิ่มเข้าไป
+# แล้ว patch updated_date / detail_ok ของทุก url ที่ scrape รอบนี้
+new_entries <- done_dates |> filter(!url %in% url_df$url) |>
+  transmute(page = list_page, url, updated_date, detail_ok = scrape_ok, missed_count = 0L)
+url_df <- bind_rows(url_df, new_entries)
+idx <- match(done_dates$url, url_df$url)
+ok  <- !is.na(done_dates$scrape_ok) & done_dates$scrape_ok
+url_df$updated_date[idx[ok]] <- done_dates$updated_date[ok]
+url_df$detail_ok[idx]        <- done_dates$scrape_ok
 save(url_df, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
 
