@@ -55,23 +55,34 @@ def info(extra):
     return None
 
 
-def rclone(*args, check=False):
+def rclone(*args):
     if DRY:
         return
-    subprocess.run(["rclone", *args], check=check)
+    subprocess.run(["rclone", *args], check=True)
+
+
+def remote_exists(remote):
+    """True if the remote file exists on Drive (DRY: whether the local copy exists)."""
+    if DRY:
+        return os.path.exists(os.path.basename(remote))
+    folder, name = remote.rsplit("/", 1)
+    out = subprocess.run(["rclone", "lsf", folder, "--include", name],
+                         check=True, capture_output=True, text=True).stdout
+    return name in out.splitlines()
 
 
 def replace_day(remote, local, header, day, new_lines):
     """Download the log, drop any rows already written for `day`, append the new rows, upload."""
-    rclone("copyto", remote, local)   # no remote file yet = start fresh
-    try:
+    # an existing log must be downloaded (failure raises); only a log that does not exist yet starts fresh
+    if remote_exists(remote):
+        rclone("copyto", remote, local)
         old = open(local, encoding="utf-8").read().splitlines()
-    except FileNotFoundError:
+    else:
         old = []
     kept = [ln for ln in old[1:] if ln.strip() and not ln.startswith(day + ",")] if old else []
     dropped = (len(old) - 1 - len(kept)) if old else 0
     open(local, "w", encoding="utf-8").write("\n".join([header] + kept + new_lines) + "\n")
-    rclone("copyto", local, remote, check=True)
+    rclone("copyto", local, remote)
     if dropped > 0:
         print(f"{os.path.basename(local)}: replaced {dropped} existing rows for {day}")
 
