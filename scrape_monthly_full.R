@@ -24,12 +24,10 @@
 # =============================================================================
 
 CONFIG <- list(
-  base_url    = "https://www.taladnudbaan.com/properties?sellers_only_out=on&order=price%20desc&view=list&page_length=60&",
   list_base_url = "https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list",   # ไม่ส่ง order -> ลำดับ default
   sleep_sec   = 0.1,
   max_retries = 4L,
   backoff_sec = 20,
-  max_pages   = 9000L,
   chunk_size  = 500L,
 
   pending_rdata        = "taladnudbaan_full_pending.RData",   # -> full_urls, full_accum (list ของ tibble ที่ scrape ไปแล้ว)
@@ -112,8 +110,6 @@ fetch_html <- function(url, attempt = 1L) {
 }
 
 # ---- LIST PAGE ----------------------------------------------------------------
-build_list_url <- function(page) paste0(CONFIG$base_url, "page=", page)
-
 # เก็บ url + updated_date (เหมือน scrape_daily.R) ไม่ใช่แค่ url เฉยๆ -> เอาไป rebuild
 # baseline (taladnudbaan_urls.RData) ได้ตรงๆ เวลา REBUILD_MAIN=true
 parse_list_page <- function(list_page) {
