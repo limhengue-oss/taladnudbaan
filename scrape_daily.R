@@ -410,7 +410,7 @@ if (length(to_scrape_all) == 0) {
   }
 }
 
-detail_update  <- if (length(detail_done) > 0) bind_rows(detail_done) else empty_row(NA)[0, ]
+detail_update  <- if (length(detail_done) > 0) bind_rows(detail_done) else empty_row(NA_character_)[0, ]
 done_urls      <- if (nrow(detail_update) > 0) detail_update$url else character(0)
 
 # output เฉพาะรายการที่ scrape แล้ว
