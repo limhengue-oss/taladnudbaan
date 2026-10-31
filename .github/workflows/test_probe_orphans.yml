@@ -36,7 +36,7 @@ jobs:
                    card = map_chr(a, function(x) { c <- html_element(x, xpath = "ancestor::*[contains(., 'ปรับปรุงล่าสุด')][1]"); if (length(c)) str_squish(html_text2(c)) else "" })) |>
               distinct(url, .keep_all = TRUE)
           }
-          all_pages <- function(e) { acc <- list(); for (p in 1:60) { d <- cards(get(e, 60L, p)); if (!nrow(d)) break; acc[[p]] <- d }; bind_rows(acc) |> distinct(url, .keep_all = TRUE) }
+          all_pages <- function(e) { acc <- list(tibble(url = character(0), card = character(0))); for (p in 1:60) { d <- cards(get(e, 60L, p)); if (!nrow(d)) break; acc[[p + 1]] <- d }; bind_rows(acc) |> distinct(url, .keep_all = TRUE) }
           prices <- c("&min=0&max=500000", "&min=500000&max=1000000", "&min=1000000&max=2000000",
                       "&min=2000000&max=3000000", "&min=3000000&max=4000000", "&min=4000000&max=5000000",
                       "&min=5000000&max=5000001", "&min=5000001")
