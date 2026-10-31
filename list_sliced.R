@@ -87,16 +87,19 @@ list_solve <- function(e, lvl = 1L) {
   if (n == 0L) return(list(df = tibble(url = character(0), updated_date = character(0)), short = NULL))
 
   short <- NULL
+  split <- n > 60L && lvl <= length(LIST_LEVELS)
   if (n <= 60L) {
     got <- r$df
-  } else if (lvl <= length(LIST_LEVELS)) {
+  } else if (split) {
     parts <- lapply(LIST_LEVELS[[lvl]], function(s) list_solve(paste0(e, s), lvl + 1L))
     got   <- bind_rows(lapply(parts, `[[`, "df")) |> distinct(url, .keep_all = TRUE)
     short <- do.call(c, lapply(parts, `[[`, "short"))
   } else {
     got <- list_paginated(e, 60L)
   }
-  if (nrow(got) < n) got <- list_rescue(e, got, n)
+  # เก็บตกเฉพาะส่วนที่ไม่ได้แบ่งต่อ: ส่วนที่แบ่งแล้ว ส่วนย่อยเก็บตกของตัวเองไปแล้ว
+  # ถ้าเก็บตกซ้ำที่ระดับบนจะไล่ทั้งก้อน (เช่นทั้งอำเภอ) ใหม่หลายรอบเพราะขาดแค่ไม่กี่รายการ
+  if (nrow(got) < n && !split) got <- list_rescue(e, got, n)
   if (nrow(got) < n) short <- c(short, list(tibble(node = e, n = n, got = nrow(got))))
   list(df = got, short = short)
 }
