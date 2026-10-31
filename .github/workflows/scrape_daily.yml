@@ -56,6 +56,7 @@ jobs:
       - name: Run daily scrape
         env:
           WORKERS: '10'
+          LIST_WORKERS: '25'
         run: |
           export WORKFLOW_START_EPOCH=$(date +%s)
           Rscript scrape_daily.R
