@@ -115,6 +115,11 @@ list_scope <- function(e) {
 
 list_city <- function(cid) {
   e <- paste0("&city_id=", cid)
+  t0 <- Sys.time()
+  on.exit({
+    sec <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    if (sec >= 60) message(sprintf("  [list time] city_id=%d %.0fs", cid, sec))
+  }, add = TRUE)
   tryCatch(c(list_scope(e), list(failed = FALSE)),
            error = function(err) {
              message("  [list ERROR] ", e, ": ", conditionMessage(err))
