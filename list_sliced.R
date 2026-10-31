@@ -138,7 +138,7 @@ scrape_all_list <- function() {
   probe_p <- function(p) vapply(p, function(x) if (is.null(x)) NA_character_ else as.character(x$prov), character(1))
 
   cprobe <- future_map(paste0("&city_id=", 1:1400), probe_one, .options = opt)
-  for (k in which(vapply(cprobe, is.null, logical(1)))) cprobe[[k]] <- probe_one(paste0("&city_id=", k))   # retry probe ที่ error
+  for (k in which(vapply(cprobe, is.null, logical(1)))) cprobe[k] <- list(probe_one(paste0("&city_id=", k)))   # retry probe ที่ error
   cn <- probe_n(cprobe); cprov <- probe_p(cprobe)
   ids <- which(!is.na(cn) & cn > 0L)
   ids <- ids[order(-cn[ids])]                                       # อำเภอใหญ่ก่อน
@@ -148,7 +148,7 @@ scrape_all_list <- function() {
   # ถ้าถามหลังไล่อำเภอเสร็จ (~1 ชม.) ยอดที่ขยับตามเวลาจะทำให้เกือบทุกจังหวัดดูเหมือนมีรายการเหลือ
   pids   <- 1:150
   pprobe <- future_map(paste0("&province_id=", pids), probe_one, .options = opt)
-  for (k in which(vapply(pprobe, is.null, logical(1)))) pprobe[[k]] <- probe_one(paste0("&province_id=", k))
+  for (k in which(vapply(pprobe, is.null, logical(1)))) pprobe[k] <- list(probe_one(paste0("&province_id=", k)))
   pn <- probe_n(pprobe); pname <- probe_p(pprobe)
 
   res <- future_map(ids, list_city, .options = opt)
