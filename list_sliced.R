@@ -97,9 +97,14 @@ list_solve <- function(e, lvl = 1L) {
   } else {
     got <- list_paginated(e, 60L)
   }
-  # เก็บตกเฉพาะส่วนที่ไม่ได้แบ่งต่อ: ส่วนที่แบ่งแล้ว ส่วนย่อยเก็บตกของตัวเองไปแล้ว
-  # ถ้าเก็บตกซ้ำที่ระดับบนจะไล่ทั้งก้อน (เช่นทั้งอำเภอ) ใหม่หลายรอบเพราะขาดแค่ไม่กี่รายการ
-  if (nrow(got) < n && !split) got <- list_rescue(e, got, n)
+  # ส่วนที่ไม่ได้แบ่งต่อ -> เก็บตกเต็มรูปแบบ
+  # ส่วนที่แบ่งตาม sale_method / type_id ไม่ต้องเก็บตกซ้ำ: ผลรวมส่วนย่อยเท่ากับยอดส่วนแม่พอดี (probe 2026-10-31)
+  # ส่วนที่แบ่งตามช่วงราคา: ทรัพย์ไม่มีราคา ("โปรดติดต่อสอบถาม" เช่นประมูล LED) ไม่ตกช่วงไหนเลย
+  # และเว็บไม่มีตัวกรองจับได้ (min=0 / max=0 ถูกเมิน) -> ไล่ส่วนแม่หน้าละ 60 รอบเดียว
+  if (nrow(got) < n) {
+    if (!split) got <- list_rescue(e, got, n)
+    else if (lvl == length(LIST_LEVELS)) got <- union_urls(got, list_paginated(e, 60L))
+  }
   if (nrow(got) < n) short <- c(short, list(tibble(node = e, n = n, got = nrow(got))))
   list(df = got, short = short)
 }
