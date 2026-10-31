@@ -1,0 +1,52 @@
+name: test-daily-list
+
+# ทดสอบชั่วคราวสำหรับ branch fix/daily-list-sliced เท่านั้น -> ลบก่อน merge
+# รัน scrape_daily.R จริง แต่ตั้ง WORKFLOW_START_EPOCH=0 ให้ข้ามขั้น detail ทันที (ทำแค่ list + diff)
+# rclone ใช้แค่ดาวน์โหลด baseline ลงมา ไม่มีการอัปโหลดอะไรขึ้น Drive
+on:
+  push:
+    branches: [fix/daily-list-sliced]
+    paths: ['.github/workflows/test_daily_list.yml']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
+
+      - run: |
+          Rscript -e 'install.packages(c("rvest", "dplyr", "stringr", "purrr", "readr", "httr", "jsonlite", "future", "furrr"))'
+
+      - uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: ${{ secrets.RCLONE_CONFIG }}
+
+      - name: Download current baseline (read only)
+        run: rclone copy gdrive:taladnudbaan/taladnudbaan_urls.RData .
+
+      - name: Run daily list + diff only (count requests)
+        env:
+          WORKERS: '10'
+          WORKFLOW_START_EPOCH: '0'
+          REQ_LOG: ${{ github.workspace }}/requests.log
+          R_PROFILE_USER: ${{ github.workspace }}/count.Rprofile
+        run: |
+          cat > count.Rprofile <<'RP'
+          setHook(packageEvent("httr", "onLoad"), function(...)
+            trace("GET", where = asNamespace("httr"), print = FALSE,
+                  tracer = quote(cat("1\n", file = Sys.getenv("REQ_LOG"), append = TRUE))))
+          RP
+          start=$(date +%s)
+          Rscript scrape_daily.R
+          echo "elapsed_min=$(( ($(date +%s) - start) / 60 ))"
+          echo "requests=$(wc -l < requests.log)"
