@@ -1,7 +1,7 @@
 # =============================================================================
 # scrape_daily.R
 # รันทุกวัน 00:00 ICT (GitHub Actions)
-# 1) scrape list ใหม่ทั้งหมด
+# 1) scrape list ใหม่ทั้งหมด (แบ่งส่วนตาม list_sliced.R + ตรวจครบกับยอดเว็บ)
 # 2) diff vs baseline -> new / removed / updated
 # 3) scrape detail เฉพาะ new + updated (ทีละ chunk เช็คเวลา)
 # output:
@@ -13,11 +13,10 @@
 # ---- CONFIG -----------------------------------------------------------------
 CONFIG <- list(
   
-  base_url  = "https://www.taladnudbaan.com/properties?sellers_only_out=on&order=price%20desc&view=list&page_length=60&",
+  list_base_url = "https://www.taladnudbaan.com/properties?sellers_only_out=on&view=list",   # ไม่ส่ง order -> ลำดับ default (ใช้ใน list_sliced.R)
   sleep_sec        = 0.1,
   max_retries      = 4L,
   backoff_sec      = 20,
-  max_pages        = 9000L,
   chunk_size       = 1000L,   # scrape detail ทีละกี่รายการ
   time_limit_min   = 250L,    # หยุดถ้าผ่านไปแล้วกี่นาทีนับจากเริ่ม workflow
   flicker_threshold = 2L,     # ต้องเห็น "หายจาก list" ติดกันกี่รอบถึงจะเชื่อว่า removed จริง (กัน race condition/flicker ตอนไล่ list)
@@ -115,8 +114,6 @@ normalize_date <- function(x) {
 }
 
 # ---- LIST PAGE: url + updated_date ------------------------------------------
-build_list_url <- function(page) paste0(CONFIG$base_url, "page=", page)
-
 parse_list_page <- function(list_page) {
   anchors <- list_page |> html_elements(xpath = "//a[contains(@href, '/property/')]")
   n_anchors <- length(anchors)
@@ -137,36 +134,14 @@ parse_list_page <- function(list_page) {
 
   empty_schema <- tibble(url = character(0), updated_date = character(0))
   n_matched <- sum(!map_lgl(rows, is.null))
-
-  if (n_anchors == 0) {
-    message("    [info] หน้านี้ไม่มี anchor /property/ เลย -> ถือว่าจบข้อมูลจริง")
-    return(empty_schema)
-  }
-  if (n_matched == 0) {
-    # ผิดปกติ: มี anchor แต่ regex ไม่ผ่านสักตัว -> อาจไม่ใช่หน้าสุดท้ายจริง
-    message("    [WARN] พบ ", n_anchors, " anchor แต่ regex ไม่ผ่านเลยสักตัว -> ตรวจ pattern href")
-    return(empty_schema)
-  }
+  if (n_anchors == 0 || n_matched == 0) return(empty_schema)
 
   bind_rows(rows) |> distinct(url, .keep_all = TRUE)
 }
 
-scrape_all_list <- function() {
-  message("=== SCRAPE LIST ===")
-  acc <- list(); p <- 1L
-  repeat {
-    t0 <- Sys.time()
-    df <- parse_list_page(fetch_html(build_list_url(p)))
-    elapsed <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 2)
-    if (nrow(df) == 0) { message("  หน้า ", p, " ว่าง — จบ"); break }
-    df$list_page <- p
-    acc[[p]] <- df
-    message(sprintf("  หน้า %d -> %d url (%.2fs)", p, nrow(df), elapsed))
-    p <- p + 1L
-    if (p > CONFIG$max_pages) break
-  }
-  bind_rows(acc) |> distinct(url, .keep_all = TRUE)
-}
+# ---- LIST แบบแบ่งส่วน: scrape_all_list() อยู่ใน list_sliced.R (ใช้ร่วมกับ scrape_monthly_full.R) ----
+# คืน tibble(url, updated_date, page, sale_method) หยุดด้วย error ถ้า coverage < LIST_MIN_COVERAGE
+source("list_sliced.R")
 
 # ---- DIFF -------------------------------------------------------------------
 # baseline_urls ต้องมีคอลัมน์ missed_count (จำนวนรอบติดกันที่ "หายจาก list") อยู่แล้ว
@@ -387,10 +362,10 @@ if (RESUME_ONLY) {
     bind_rows(
       url_df |> filter(url %in% d$removed_urls) |>
         transmute(url, updated_date = baseline_detail$updated_date[match(url, baseline_detail$url)],
-                  list_page = page, status = "removed"),
+                  page, status = "removed"),
       url_df |> filter(url %in% d$flicker_urls) |>
         transmute(url, updated_date = baseline_detail$updated_date[match(url, baseline_detail$url)],
-                  list_page = page, status = "flicker")
+                  page, status = "flicker")
     ) |>
     mutate(as_of = stamp)
 
@@ -435,7 +410,7 @@ if (length(to_scrape_all) == 0) {
   }
 }
 
-detail_update  <- if (length(detail_done) > 0) bind_rows(detail_done) else empty_row(NA)[0, ]
+detail_update  <- if (length(detail_done) > 0) bind_rows(detail_done) else empty_row(NA_character_)[0, ]
 done_urls      <- if (nrow(detail_update) > 0) detail_update$url else character(0)
 
 # output เฉพาะรายการที่ scrape แล้ว
@@ -458,27 +433,18 @@ writeLines(c(f_list, f_change, f_detail), "output_files.txt")
 # ไม่งั้น url ที่ scrape fail ครั้งเดียวจะโดนนับว่า "เสร็จแล้ว" ถาวร ไม่มีวันถูก re-scrape อีก
 scrape_ok_map <- detail_update |> distinct(url, .keep_all = TRUE) |> select(url, scrape_ok)
 done_dates <- flagged |> filter(url %in% done_urls) |> distinct(url, .keep_all = TRUE) |>
-  select(url, updated_date, list_page) |>
+  select(url, updated_date, page) |>
   left_join(scrape_ok_map, by = "url")
 
-if (RESUME_ONLY) {
-  # resume mode: patch เฉพาะรายการที่ scrape เข้า baseline เดิม ไม่แตะรายการอื่น
-  idx   <- match(done_dates$url, url_df$url)
-  valid <- !is.na(idx)
-  ok    <- valid & !is.na(done_dates$scrape_ok) & done_dates$scrape_ok
-  url_df$updated_date[idx[ok]]    <- done_dates$updated_date[ok]
-  url_df$detail_ok[idx[valid]]    <- done_dates$scrape_ok[valid]
-} else {
-  # full mode: มี new_list ครบทุกหน้าอยู่แล้ว -> rebuild url_df จาก flagged (ตัด removed ออกแล้ว)
-  new_entries <- done_dates |> filter(!url %in% url_df$url) |>
-    transmute(page = list_page, url, updated_date, detail_ok = scrape_ok, missed_count = 0L)
-  url_df <- bind_rows(url_df, new_entries)
-  idx   <- match(done_dates$url, url_df$url)
-  valid <- !is.na(idx)
-  ok    <- valid & !is.na(done_dates$scrape_ok) & done_dates$scrape_ok
-  url_df$updated_date[idx[ok]] <- done_dates$updated_date[ok]
-  url_df$detail_ok[idx[valid]] <- done_dates$scrape_ok[valid]
-}
+# ใช้ทั้งโหมดปกติและ resume: url ที่ scrape แล้วแต่ยังไม่มีใน baseline (รายการ new) -> เพิ่มเข้าไป
+# แล้ว patch updated_date / detail_ok ของทุก url ที่ scrape รอบนี้
+new_entries <- done_dates |> filter(!url %in% url_df$url) |>
+  transmute(page, url, updated_date, detail_ok = scrape_ok, missed_count = 0L)
+url_df <- bind_rows(url_df, new_entries)
+idx <- match(done_dates$url, url_df$url)
+ok  <- !is.na(done_dates$scrape_ok) & done_dates$scrape_ok
+url_df$updated_date[idx[ok]] <- done_dates$updated_date[ok]
+url_df$detail_ok[idx]        <- done_dates$scrape_ok
 save(url_df, file = CONFIG$baseline_list_rdata)
 message("อัพเดท baseline -> ", CONFIG$baseline_list_rdata)
 

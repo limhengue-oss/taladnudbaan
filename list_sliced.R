@@ -87,16 +87,24 @@ list_solve <- function(e, lvl = 1L) {
   if (n == 0L) return(list(df = tibble(url = character(0), updated_date = character(0)), short = NULL))
 
   short <- NULL
+  split <- n > 60L && lvl <= length(LIST_LEVELS)
   if (n <= 60L) {
     got <- r$df
-  } else if (lvl <= length(LIST_LEVELS)) {
+  } else if (split) {
     parts <- lapply(LIST_LEVELS[[lvl]], function(s) list_solve(paste0(e, s), lvl + 1L))
     got   <- bind_rows(lapply(parts, `[[`, "df")) |> distinct(url, .keep_all = TRUE)
     short <- do.call(c, lapply(parts, `[[`, "short"))
   } else {
     got <- list_paginated(e, 60L)
   }
-  if (nrow(got) < n) got <- list_rescue(e, got, n)
+  # ส่วนที่ไม่ได้แบ่งต่อ -> เก็บตกเต็มรูปแบบ
+  # ส่วนที่แบ่งตาม sale_method / type_id ไม่ต้องเก็บตกซ้ำ: ผลรวมส่วนย่อยเท่ากับยอดส่วนแม่พอดี (probe 2026-10-31)
+  # ส่วนที่แบ่งตามช่วงราคา: ทรัพย์ไม่มีราคา ("โปรดติดต่อสอบถาม" เช่นประมูล LED) ไม่ตกช่วงไหนเลย
+  # และเว็บไม่มีตัวกรองจับได้ (min=0 / max=0 ถูกเมิน) -> ไล่ส่วนแม่หน้าละ 60 รอบเดียว
+  if (nrow(got) < n) {
+    if (!split) got <- list_rescue(e, got, n)
+    else if (lvl == length(LIST_LEVELS)) got <- union_urls(got, list_paginated(e, 60L))
+  }
   if (nrow(got) < n) short <- c(short, list(tibble(node = e, n = n, got = nrow(got))))
   list(df = got, short = short)
 }
@@ -115,6 +123,11 @@ list_scope <- function(e) {
 
 list_city <- function(cid) {
   e <- paste0("&city_id=", cid)
+  t0 <- Sys.time()
+  on.exit({
+    sec <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    if (sec >= 60) message(sprintf("  [list time] city_id=%d %.0fs", cid, sec))
+  }, add = TRUE)
   tryCatch(c(list_scope(e), list(failed = FALSE)),
            error = function(err) {
              message("  [list ERROR] ", e, ": ", conditionMessage(err))
@@ -138,7 +151,7 @@ scrape_all_list <- function() {
   probe_p <- function(p) vapply(p, function(x) if (is.null(x)) NA_character_ else as.character(x$prov), character(1))
 
   cprobe <- future_map(paste0("&city_id=", 1:1400), probe_one, .options = opt)
-  for (k in which(vapply(cprobe, is.null, logical(1)))) cprobe[[k]] <- probe_one(paste0("&city_id=", k))   # retry probe ที่ error
+  for (k in which(vapply(cprobe, is.null, logical(1)))) cprobe[k] <- list(probe_one(paste0("&city_id=", k)))   # retry probe ที่ error
   cn <- probe_n(cprobe); cprov <- probe_p(cprobe)
   ids <- which(!is.na(cn) & cn > 0L)
   ids <- ids[order(-cn[ids])]                                       # อำเภอใหญ่ก่อน
@@ -148,7 +161,7 @@ scrape_all_list <- function() {
   # ถ้าถามหลังไล่อำเภอเสร็จ (~1 ชม.) ยอดที่ขยับตามเวลาจะทำให้เกือบทุกจังหวัดดูเหมือนมีรายการเหลือ
   pids   <- 1:150
   pprobe <- future_map(paste0("&province_id=", pids), probe_one, .options = opt)
-  for (k in which(vapply(pprobe, is.null, logical(1)))) pprobe[[k]] <- probe_one(paste0("&province_id=", k))
+  for (k in which(vapply(pprobe, is.null, logical(1)))) pprobe[k] <- list(probe_one(paste0("&province_id=", k)))
   pn <- probe_n(pprobe); pname <- probe_p(pprobe)
 
   res <- future_map(ids, list_city, .options = opt)
