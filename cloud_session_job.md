@@ -1,6 +1,6 @@
 # Cloud session: งานที่ทำ (2026-10-31 ถึง 2026-11-01)
 
-สรุปให้ local session ทำงานต่อได้ งานทั้งหมด merge เข้า `main` แล้วผ่าน PR #1 (merge commit `38eff96`)
+สรุปให้ local session ทำงานต่อได้ งานส่วนใหญ่ merge เข้า `main` แล้วผ่าน PR #1 (merge commit `38eff96`) ส่วนการแบ่งขั้น detail ของรอบรายเดือน (หัวข้อ 4) push ตรงเข้า main (commit `b919431`)
 
 ## 1. ตรวจบั๊กและแก้ (รายละเอียดเต็มอยู่ใน `BUGS.md`)
 
@@ -66,7 +66,20 @@
   - หาสาเหตุที่ผลรวมของช่วงราคาเกินยอดส่วนแม่ในรายการขาย
 - **ต้องทำเอง:** rclone เตือนว่า Google Drive client_id ที่ใช้ร่วมกันจะหยุดใช้งานภายในปี 2026 ควรสร้าง client_id ของตัวเอง (https://rclone.org/drive/#making-your-own-client-id) แล้วอัปเดต secret `RCLONE_CONFIG`
 
-## 4. Branch ที่เกี่ยวข้อง
+## 4. รอบรายเดือน 2026-11-01 และการแบ่งขั้น detail เป็น 2 job
+
+- **ผลรอบนี้:** job list ผ่าน (2 ชม. 27 นาที ใช้โค้ดเดิม เพราะเริ่มก่อน merge) แต่ job detail หมดเวลา 335 นาที เหลือ 4,385 รายการ จึงสั่งรันใหม่ด้วย `resume_detail=true` ทำต่อเสร็จในราว 8 นาที
+- **ผลสุดท้าย:** `taladnudbaan_properties.csv` และ baseline ได้ **175,885 แถว/url** ไฟล์เดิมสำรองไว้เป็น `taladnudbaan_properties_backup_20261004.csv` จากนั้น workflow สั่ง daily รอบแรกของโค้ดใหม่ต่อเอง (run #158)
+- **สาเหตุที่ไม่เสร็จ:** ขั้น detail ใช้ราว 0.1 วินาทีต่อรายการ (25 workers) ถ้าเป็น ~177k รายการจะใช้ราว 345 นาที ซึ่งเกินเพดาน 335 นาทีที่ตั้งไว้ (เพดานของ GitHub คือ 6 ชม. **ต่อ job** ไม่ได้นับรวมทั้ง workflow)
+- **สิ่งที่แก้ (commit `b919431`, push ตรงเข้า main):**
+  - ย้ายขั้นตอนของ job detail ไปไว้ใน `.github/workflows/scrape_monthly_detail.yml` ซึ่งเป็น workflow ที่ถูกเรียกใช้ซ้ำได้ (`workflow_call`) รับค่า `final`
+  - `scrape_monthly.yml` ตอนนี้เป็น `list → detail (final: false) → detail_2 (final: true)`
+  - detail ที่ทำไม่เสร็จจะอัปโหลดรายการที่ค้าง แล้วส่ง `finished=false` โดยไม่ fail และไม่ส่งเมล
+  - detail_2 รันเฉพาะตอนที่ detail ไม่ error แต่ทำไม่เสร็จ แล้วทำต่อจากรายการที่ค้างบน Drive ถ้ายังไม่เสร็จอีกจะ fail และส่งเมล
+  - ตัวเลือก `resume_detail` ยังใช้ได้เหมือนเดิม
+- **ยังไม่ได้รันจริง:** ตรวจแค่ว่า yml อ่านได้และไล่เงื่อนไข `if` ด้วยตา จะได้ทดสอบครั้งแรกตอนรอบรายเดือน 2026-12-01 ถ้ารอบนั้นมีปัญหา ให้ดูที่ job detail/detail_2 ก่อน
+
+## 5. Branch ที่เกี่ยวข้อง
 
 - `perf/list-sliced` merge เข้า main แล้ว (มีงานของ `ccr-537d83df-pufm37` และ `fix/daily-list-sliced` อยู่ครบ) ทั้งสอง branch นั้นลบได้
 - ระหว่างทดสอบใช้ workflow ชั่วคราว (`test_daily_list.yml`, `test_probe_*.yml`) ลบออกหมดแล้ว แต่ยังดูย้อนหลังได้จาก git history ของ `perf/list-sliced`
