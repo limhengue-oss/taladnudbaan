@@ -9,7 +9,8 @@ name: scrape-monthly
 #   job list   : ไล่ list (แบ่งอำเภอ/ประเภท/ราคา + ตรวจครบกับยอดเว็บ) -> เซฟ taladnudbaan_full_list.RData ขึ้น Drive
 #   job detail : อ่าน list จาก Drive -> scrape detail (หยุดเองที่ 335 นาที เซฟ pending ขึ้น Drive)
 #                -> ครบทุกรายการ จึงเขียนทับ properties.csv + baseline ระหว่างทางของเดิมบน Drive ไม่ถูกแตะ
-# ถ้า detail ไม่ทันใน 1 job: สั่ง dispatch ใหม่ติ๊ก resume_detail (ข้าม job list, ทำต่อจาก pending บน Drive)
+#   job detail_2: รันเองเมื่อ detail ไม่จบ -> ทำต่อจาก pending บน Drive (ขั้นตอนเดียวกัน: scrape_monthly_detail.yml)
+# ถ้า detail_2 ก็ยังไม่จบ: สั่ง dispatch ใหม่ติ๊ก resume_detail (ข้าม job list, ทำต่อจาก pending บน Drive)
 on:
   schedule:
     - cron: '0 1 1 * *'          # 01:00 ของวันที่ 1 ทุกเดือน ตามเวลาไทย
@@ -91,116 +92,19 @@ jobs:
             credentials = creds_envvar(user = user, pass_envvar = "GMAIL_APP_PASSWORD",
                                        host = "smtp.gmail.com", port = 465, use_ssl = TRUE))'
 
+  # ขั้น detail ใช้ ~345 นาที เกินเพดาน 335 นาที/job เล็กน้อย -> รอบแรกไม่จบ รอบที่สองทำต่อจาก pending บน Drive เอง
   detail:
     needs: list
     if: always() && (needs.list.result == 'success' || needs.list.result == 'skipped')
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
+    uses: ./.github/workflows/scrape_monthly_detail.yml
+    with:
+      final: false
+    secrets: inherit
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup R
-        uses: r-lib/actions/setup-r@v2
-        with:
-          use-public-rspm: true
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev
-
-      - name: Install R packages
-        run: |
-          Rscript -e 'install.packages(c(
-            "rvest", "dplyr", "stringr", "purrr",
-            "readr", "httr", "jsonlite", "future", "furrr", "blastula"
-          ))'
-
-      - name: Setup rclone
-        uses: AnimMouse/setup-rclone@v1
-        with:
-          rclone_config: ${{ secrets.RCLONE_CONFIG }}
-
-      - name: Download list + pending + current properties.csv (backup ก่อนเขียนทับ)
-        run: |
-          rclone copy gdrive:taladnudbaan/taladnudbaan_full_list.RData .    # ต้องมี ถ้าไม่มี job จะ fail
-          rclone copy gdrive:taladnudbaan/taladnudbaan_full_pending.RData . || true
-          rclone copy gdrive:taladnudbaan/taladnudbaan_properties.csv . || true
-          ls -la taladnudbaan_full_list.RData
-          ls -la taladnudbaan_full_pending.RData 2>/dev/null || echo "no pending -> start detail from the beginning"
-
-      - name: Scrape detail + rebuild properties.csv + baseline
-        id: scrape
-        env:
-          PHASE: 'detail'
-          WORKERS: '25'
-          TIME_LIMIT_MIN: '335'    # หยุดเองก่อนชนเพดาน 350 นาที แล้วเซฟ pending
-          REBUILD_MAIN: 'true'
-        run: Rscript scrape_monthly_full.R
-
-      - name: Check finished
-        id: fin
-        if: always()
-        run: |
-          if [ -f output_files_full.txt ] && [ "${{ steps.scrape.outcome }}" = "success" ]; then
-            echo "finished=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "finished=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload results (finished) or pending (unfinished) to Google Drive
-        if: always()
-        run: |
-          if [ "${{ steps.fin.outputs.finished }}" = "true" ]; then
-            while IFS= read -r f; do
-              [ -n "$f" ] && rclone copy "$f" gdrive:taladnudbaan/
-            done < output_files_full.txt
-            rclone copy taladnudbaan_properties_backup_*.csv gdrive:taladnudbaan/ || true
-            rclone deletefile gdrive:taladnudbaan/taladnudbaan_full_pending.RData || true
-            rclone deletefile gdrive:taladnudbaan/taladnudbaan_full_list.RData || true
-          elif [ -f taladnudbaan_full_pending.RData ]; then
-            rclone copy taladnudbaan_full_pending.RData gdrive:taladnudbaan/
-            echo "unfinished -> pending uploaded; re-dispatch with resume_detail=true to continue"
-          fi
-
-      - name: Fail loudly if detail did not finish
-        if: always() && steps.scrape.outcome == 'success' && steps.fin.outputs.finished != 'true'
-        run: |
-          echo "detail did not finish within the time limit; pending saved on Drive"
-          exit 1
-
-      - name: Notify email
-        if: always()
-        env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          JOB_STATUS: ${{ job.status }}
-          FINISHED: ${{ steps.fin.outputs.finished }}
-        run: |
-          Rscript -e '
-          library(blastula)
-          user   <- Sys.getenv("GMAIL_USER")
-          pass   <- Sys.getenv("GMAIL_APP_PASSWORD")
-          status <- Sys.getenv("JOB_STATUS")
-          fin    <- Sys.getenv("FINISHED")
-          if (!nzchar(user) || !nzchar(pass)) quit(save = "no")
-          note <- if (fin == "true") "ครบทุกรายการ เขียนทับ properties.csv + baseline แล้ว" else
-                  "ยังไม่ครบ/ล้มเหลว: properties.csv เดิมไม่ถูกแตะ (ถ้า scrape ไม่จบ ให้ dispatch ใหม่ติ๊ก resume_detail)"
-          smtp_send(
-            compose_email(body = md(paste0(
-              "taladnudbaan monthly full re-scrape + baseline rebuild: **", status, "**\n\n", note, "\n\n",
-              "วันที่: ", Sys.Date()
-            ))),
-            to          = c(user, "wasinr@bot.or.th"),
-            from        = user,
-            subject     = paste0("[taladnudbaan] monthly full-rebuild ", status, " ", format(Sys.Date(), "%Y%m%d")),
-            credentials = creds_envvar(
-              user        = user,
-              pass_envvar = "GMAIL_APP_PASSWORD",
-              host        = "smtp.gmail.com",
-              port        = 465,
-              use_ssl     = TRUE
-            )
-          )'
+  detail_2:
+    needs: detail
+    if: always() && needs.detail.result == 'success' && needs.detail.outputs.finished != 'true'
+    uses: ./.github/workflows/scrape_monthly_detail.yml
+    with:
+      final: true
+    secrets: inherit
